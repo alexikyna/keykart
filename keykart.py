@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, simpledialog
 import mysql.connector
 
 # --- Global Styles ---
@@ -18,7 +18,7 @@ def get_db():
     return mysql.connector.connect(
         host="localhost",
         user="root",
-        password="p@ssword",
+        password="Password123",
         database="keykart"
     )
 
@@ -183,6 +183,8 @@ def show_order_history(user):
         tree.heading(col, text=col)
         tree.column(col, anchor="center", width=150)
     tree.pack(pady=8)
+    tk.Button(history, text="Cancel Selected Order", bg="#e84c4c", fg="white", font=FONT_BTN, activebackground="#c9302c",
+              command=lambda: cancel_order(tree, user, load_orders)).pack(pady=6)
 
     def load_orders():
         for row in tree.get_children():
@@ -224,44 +226,79 @@ def show_order_history(user):
     tree.bind("<<TreeviewSelect>>", show_order_items)
     load_orders()
 
+    def cancel_order(tree, user, refresh_func):
+        selected = tree.selection()
+        if not selected:
+            messagebox.showwarning("Select", "Choose an order to cancel.")
+            return
+        order_id = tree.item(selected[0])['values'][0]
+        if messagebox.askyesno("Cancel Order", f"Are you sure you want to cancel Order #{order_id}?"):
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.callproc('sp_cancel_order', (order_id,))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Cancelled", f"Order #{order_id} has been cancelled.")
+                refresh_func()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to cancel order:\n{e}")
+
+
 # ---------------- ADMIN PANEL ----------------
 def admin_panel(user):
+
     admin = tk.Tk()
     admin.title(f"Admin Panel - {user['username']}")
     admin.geometry("720x480")
     admin.configure(bg=BG_COLOR)
 
-    tk.Label(admin, text="Product Inventory", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+    tk.Label(admin, text="Admin Panel", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=20)
 
-    tree = ttk.Treeview(admin, columns=("ID", "Name", "Category", "Price", "Stock"), show="headings", height=12)
+    tk.Button(admin, text="Manage Product Inventory", font=FONT_BTN, width=30, bg="#4ee06e", fg=BTN_TEXT_COLOR,
+              activebackground="#3ac454", command=lambda: open_inventory_view(admin)).pack(pady=10)
+
+    tk.Button(admin, text="Manage User Roles", font=FONT_BTN, width=30, bg="#3da6f0", fg="white",
+              activebackground="#2b8ad4", command=open_user_roles_window).pack(pady=10)
+
+    admin.mainloop()
+
+    
+def open_inventory_view(root_window):
+    inventory_win = tk.Toplevel(root_window)
+    inventory_win.title("Product Inventory")
+    inventory_win.geometry("720x480")
+    inventory_win.configure(bg=BG_COLOR)
+
+    tk.Label(inventory_win, text="Product Inventory", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+
+    tree = ttk.Treeview(inventory_win, columns=("ID", "Name", "Category", "Price", "Stock"), show="headings", height=12)
     for col in ("ID", "Name", "Category", "Price", "Stock"):
         tree.heading(col, text=col)
         tree.column(col, anchor="center", width=120)
     tree.pack(pady=8)
 
-    # Buttons frame
-    btn_frame = tk.Frame(admin, bg=BG_COLOR)
+    btn_frame = tk.Frame(inventory_win, bg=BG_COLOR)
     btn_frame.pack(pady=8)
+
     tk.Button(btn_frame, text="Add Product", bg="#4ee06e", fg=BTN_TEXT_COLOR, font=FONT_BTN,
               activebackground="#3ac454", command=lambda: add_product(tree, refresh)).grid(row=0, column=0, padx=8)
     tk.Button(btn_frame, text="Edit Product", bg="#f7d23a", fg=BTN_TEXT_COLOR, font=FONT_BTN,
               activebackground="#e6b92e", command=lambda: edit_product(tree, refresh)).grid(row=0, column=1, padx=8)
     tk.Button(btn_frame, text="Delete Product", bg="#f7d23a", fg="#23272f", font=FONT_BTN,
               activebackground="#e84c4c", command=lambda: delete_product(tree, refresh)).grid(row=0, column=2, padx=8)
-    
 
     # Stock update
-    stock_frame = tk.Frame(admin, bg=BG_COLOR)
+    stock_frame = tk.Frame(inventory_win, bg=BG_COLOR)
     stock_frame.pack(pady=6)
     tk.Label(stock_frame, text="Set New Stock:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
     simple_qty = tk.IntVar(value=1)
     tk.Spinbox(stock_frame, from_=0, to=999, textvariable=simple_qty, width=6).pack(side="left", padx=4)
     tk.Button(stock_frame, text="Update Stock", font=FONT_BTN, bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
-              activebackground=BTN_HOVER,
-              command=lambda: update_stock(tree, simple_qty, user, refresh)).pack(side="left", padx=8)
+              activebackground=BTN_HOVER, command=lambda: update_stock(tree, simple_qty, None, refresh)).pack(side="left", padx=8)
 
-    tk.Button(admin, text="Refresh", font=FONT_BTN, bg="#e0e1ea", fg="#23272f", activebackground="#cacbd1",
-              command=lambda: refresh(tree)).pack(pady=6)
+    tk.Button(inventory_win, text="Refresh", font=FONT_BTN, bg="#e0e1ea", fg="#23272f",
+              activebackground="#cacbd1", command=lambda: refresh(tree)).pack(pady=6)
 
     def refresh(tree):
         for row in tree.get_children():
@@ -269,13 +306,87 @@ def admin_panel(user):
         conn = get_db()
         cur = conn.cursor()
         cur.execute("SELECT product_id, name, category, price_php, stock FROM products WHERE is_active=1")
-
         for row in cur.fetchall():
             tree.insert('', 'end', values=row)
         conn.close()
 
     refresh(tree)
+
     admin.mainloop()
+
+def open_user_roles_window():
+    win = tk.Toplevel()
+    win.title("Manage User Roles")
+    win.geometry("600x400")
+    win.configure(bg=BG_COLOR)
+
+    tk.Label(win, text="User Roles", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+
+    tree = ttk.Treeview(win, columns=("UserID", "Username", "Email", "Role"), show="headings", height=12)
+    for col in ("UserID", "Username", "Email", "Role"):
+        tree.heading(col, text=col)
+        tree.column(col, anchor="center", width=140)
+    tree.pack(pady=10)
+
+    def load_users():
+        for row in tree.get_children():
+            tree.delete(row)
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT user_id, username, email, role FROM users")
+            for row in cur.fetchall():
+                tree.insert('', 'end', values=row)
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load users:\n{e}")
+
+    def prompt_role_change(current_role):
+        from tkinter import Toplevel, Label, Button, StringVar
+        from tkinter.ttk import Combobox
+
+        role_window = Toplevel()
+        role_window.title("Select New Role")
+        role_window.geometry("300x150")
+        role_window.grab_set()  # Modal window
+
+        Label(role_window, text="Select New Role:").pack(pady=10)
+        role_var = StringVar(value=current_role)
+        roles = ["admin", "customer", "staff"]
+        role_combo = Combobox(role_window, textvariable=role_var, values=roles, state="readonly")
+        role_combo.pack(pady=5)
+
+        def submit():
+            role_window.destroy()
+
+        Button(role_window, text="OK", command=submit).pack(pady=10)
+        role_window.wait_window()
+        return role_var.get()
+
+    def change_role():
+        selected = tree.selection()
+        if not selected:
+            messagebox.showwarning("Select", "Choose a user.")
+            return
+        user_id, username, email, current_role = tree.item(selected[0])['values']
+        new_role = prompt_role_change(current_role)
+        if new_role and new_role != current_role:
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.callproc("sp_manage_user_roles", (user_id, new_role))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Success", f"{username}'s role updated to '{new_role}'.")
+                load_users()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to change role:\n{e}")
+
+    tk.Button(win, text="Change Selected User's Role", font=FONT_BTN, bg=ACCENT_COLOR,
+              fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER, command=change_role).pack(pady=6)
+
+    load_users()
+
 
 # ---------------- Admin Helper Functions ----------------
 def add_product(tree, refresh):
