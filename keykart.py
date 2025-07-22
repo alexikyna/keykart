@@ -226,23 +226,30 @@ def show_order_history(user):
     tree.bind("<<TreeviewSelect>>", show_order_items)
     load_orders()
 
-    def cancel_order(tree, user, refresh_func):
-        selected = tree.selection()
-        if not selected:
-            messagebox.showwarning("Select", "Choose an order to cancel.")
-            return
-        order_id = tree.item(selected[0])['values'][0]
-        if messagebox.askyesno("Cancel Order", f"Are you sure you want to cancel Order #{order_id}?"):
-            try:
-                conn = get_db()
-                cur = conn.cursor()
-                cur.callproc('sp_cancel_order', (order_id,))
-                conn.commit()
-                conn.close()
-                messagebox.showinfo("Cancelled", f"Order #{order_id} has been cancelled.")
-                refresh_func()
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to cancel order:\n{e}")
+def cancel_order(tree, user, refresh_func):
+    selected = tree.selection()
+    if not selected:
+        messagebox.showwarning("Select", "Choose an order to cancel.")
+        return
+    order_data = tree.item(selected[0])['values']
+    order_id, _, _, status = order_data
+
+    if status.lower() != "pending":
+        messagebox.showinfo("Not Allowed", f"Only pending orders can be cancelled. Order #{order_id} is '{status}'.")
+        return
+
+    if messagebox.askyesno("Cancel Order", f"Are you sure you want to cancel Order #{order_id}?"):
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.callproc('sp_cancel_order', (order_id,))
+            conn.commit()
+            conn.close()
+            messagebox.showinfo("Cancelled", f"Order #{order_id} has been cancelled.")
+            refresh_func()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to cancel order:\n{e}")
+
 
 
 # ---------------- ADMIN PANEL ----------------
