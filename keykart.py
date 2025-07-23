@@ -1,6 +1,12 @@
 import tkinter as tk
 from tkinter import messagebox, ttk, simpledialog
 import mysql.connector
+from PIL import Image, ImageTk
+import urllib.request, io
+from tkinter import filedialog
+import os
+import shutil
+
 
 # --- Global Styles ---
 BG_COLOR = "#23272f"
@@ -18,7 +24,7 @@ def get_db():
     return mysql.connector.connect(
         host="localhost",
         user="root",
-        password="Password123",
+        password="DLSU1234!",
         database="keykart"
     )
 
@@ -40,11 +46,13 @@ def login_window():
             messagebox.showerror("Database Error", f"Could not connect to MySQL.\n\n{e}")
             return
         if user:
-            root.destroy()
-            if user['role'] in ['admin', 'staff']:
-                admin_panel(user)
+            root.withdraw()
+            if user['role'] == 'admin':
+                admin_panel(user, root)
+            elif user['role'] == 'staff':
+                staff_panel(user, root)
             else:
-                shop_window(user)
+                shop_window(user, root)
         else:
             messagebox.showerror("Login Failed", "Invalid username or password.")
 
@@ -53,6 +61,7 @@ def login_window():
     root.geometry("400x360")
     root.configure(bg=BG_COLOR)
     root.resizable(False, False)
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
 
     # Title
     tk.Label(root, text="🗝️ KeyKart", font=FONT_TITLE, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=(30, 10))
@@ -85,11 +94,15 @@ def login_window():
     root.mainloop()
 
 # ---------------- SHOP WINDOW (Customer) ----------------
-def shop_window(user):
-    shop = tk.Tk()
+def shop_window(user, parent_window=None):
+    if parent_window:
+        parent_window.withdraw()  # hide login while shop is open
+
+    shop = tk.Toplevel()
     shop.title(f"KeyKart Shop - {user['username']}")
-    shop.geometry("700x480")
+    shop.geometry("1000x700")
     shop.configure(bg=BG_COLOR)
+    shop.protocol("WM_DELETE_WINDOW", lambda: (parent_window.destroy()))
 
     tk.Label(shop, text=f"Welcome, {user['username']}!", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=(15, 5))
     tk.Label(shop, text="Product Catalog", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack()
@@ -98,7 +111,33 @@ def shop_window(user):
     for col in ("ID", "Name", "Category", "Price", "Stock"):
         tree.heading(col, text=col)
         tree.column(col, anchor="center", width=120)
+
+    # Override the Price column heading with your desired initial label
+    tree.heading("Price", text="Price (PHP)")
+
     tree.pack(pady=10)
+
+    # --- Currency selector ---
+    currency_var = tk.StringVar(value="price_php")
+    currency_frame = tk.Frame(shop, bg=BG_COLOR)
+    currency_frame.pack()
+    tk.Label(currency_frame, text="Currency:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=5)
+    currency_cb = ttk.Combobox(currency_frame, textvariable=currency_var,
+                               values=["price_php", "price_usd", "price_krw"], state="readonly")
+    currency_cb.pack(side="left", padx=5)
+
+     # Update heading and refresh on change
+    def update_price_heading(*args):
+        current = currency_var.get()
+        if current == "price_php":
+            tree.heading("Price", text="Price (PHP)")
+        elif current == "price_usd":
+            tree.heading("Price", text="Price (USD)")
+        elif current == "price_krw":
+            tree.heading("Price", text="Price (KRW)")
+        refresh_products()
+
+    currency_var.trace_add("write", update_price_heading)
 
     # Quantity
     qty_frame = tk.Frame(shop, bg=BG_COLOR)
@@ -119,22 +158,31 @@ def shop_window(user):
     tk.Button(shop, text="View Order History", bg="#f7d23a", fg="#23272f", font=FONT_BTN,
               activebackground="#3d84c6",
               command=lambda: show_order_history(user)).pack(pady=6)
+    # Logout button
+    tk.Button(
+        shop, text="Logout", font=FONT_BTN, bg="#e84c4c", fg="white",
+        activebackground="#c9302c",
+        command=lambda: (shop.destroy(), parent_window.deiconify() if parent_window else login_window())
+    ).pack(pady=10)
 
     cart = []
 
     def refresh_products():
+    # clear existing rows
         for row in tree.get_children():
             tree.delete(row)
+        # fetch new rows
         try:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("SELECT product_id, name, category, price_php, stock FROM products WHERE is_active=1")
-
+            price_col = currency_var.get()
+            cur.execute(f"SELECT product_id, name, category, {price_col}, stock FROM products WHERE is_active=1")
             for row in cur.fetchall():
                 tree.insert('', 'end', values=row)
             conn.close()
         except Exception as e:
             messagebox.showerror("DB Error", f"Failed to fetch products:\n{e}")
+
 
     def add_to_cart(tree, qty_var, cart_list):
         selected = tree.selection()
@@ -253,82 +301,209 @@ def cancel_order(tree, user, refresh_func):
 
 
 # ---------------- ADMIN PANEL ----------------
-def admin_panel(user):
+def admin_panel(user, parent_window):
+    parent_window.withdraw()
 
-    admin = tk.Tk()
+    admin = tk.Toplevel(parent_window)
     admin.title(f"Admin Panel - {user['username']}")
-    admin.geometry("720x480")
+    admin.geometry("700x500")
     admin.configure(bg=BG_COLOR)
+    admin.protocol("WM_DELETE_WINDOW", lambda: parent_window.destroy())
 
     tk.Label(admin, text="Admin Panel", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=20)
 
-    tk.Button(admin, text="Manage Product Inventory", font=FONT_BTN, width=30, bg="#4ee06e", fg=BTN_TEXT_COLOR,
-              activebackground="#3ac454", command=lambda: open_inventory_view(admin)).pack(pady=10)
+    tk.Button(admin,
+            text="Manage Product Inventory",
+            font=FONT_BTN, width=30, bg="#4ee06e", fg=BTN_TEXT_COLOR,
+            activebackground="#3ac454",
+            command=lambda: open_inventory_view(admin, user)).pack(pady=10)
 
-    tk.Button(admin, text="Manage User Roles", font=FONT_BTN, width=30, bg="#3da6f0", fg="white",
-              activebackground="#2b8ad4", command=open_user_roles_window).pack(pady=10)
+    tk.Button(admin,
+            text="Manage User Roles",
+            font=FONT_BTN, width=30, bg="#3da6f0", fg="white",
+            activebackground="#2b8ad4",
+            command=lambda: open_user_roles_window(admin, user)).pack(pady=10)
 
-    admin.mainloop()
+
+    # Logout button: close admin window and show login again
+    tk.Button(
+        admin, text="Logout", font=FONT_BTN, bg="#e84c4c", fg="white",
+        activebackground="#c9302c",
+        command=lambda: (admin.destroy(), parent_window.deiconify() if parent_window else login_window())
+    ).pack(pady=10)
 
     
-def open_inventory_view(root_window):
-    inventory_win = tk.Toplevel(root_window)
+def open_inventory_view(admin_window, user):
+    admin_window.withdraw()
+    inventory_win = tk.Toplevel(admin_window)
     inventory_win.title("Product Inventory")
-    inventory_win.geometry("720x480")
+    inventory_win.geometry("1000x700")
     inventory_win.configure(bg=BG_COLOR)
+    inventory_win.protocol("WM_DELETE_WINDOW", lambda: (inventory_win.destroy(), admin_window.deiconify()))
 
-    tk.Label(inventory_win, text="Product Inventory", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+    tk.Label(inventory_win, text="Product Inventory", font=FONT_HEADER,
+             fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
 
-    tree = ttk.Treeview(inventory_win, columns=("ID", "Name", "Category", "Price", "Stock"), show="headings", height=12)
+    # Table
+    tree = ttk.Treeview(inventory_win,
+                        columns=("ID", "Name", "Category", "Price", "Stock"),
+                        show="headings", height=12)
     for col in ("ID", "Name", "Category", "Price", "Stock"):
         tree.heading(col, text=col)
         tree.column(col, anchor="center", width=120)
     tree.pack(pady=8)
 
+    # Currency selector
+    currency_var = tk.StringVar(value="price_php")
+    currency_frame = tk.Frame(inventory_win, bg=BG_COLOR)
+    currency_frame.pack()
+    tk.Label(currency_frame, text="Currency:", font=FONT_LABEL,
+             fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=5)
+    currency_cb = ttk.Combobox(currency_frame, textvariable=currency_var,
+                               values=["price_php", "price_usd", "price_krw"],
+                               state="readonly")
+    currency_cb.pack(side="left", padx=5)
+
+    # Refresh function
+    def refresh(tree_widget):
+        tree_widget.delete(*tree_widget.get_children())
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            price_col = currency_var.get()
+            cur.execute(f"SELECT product_id, name, category, {price_col}, stock FROM products WHERE is_active=1")
+            for row in cur.fetchall():
+                tree_widget.insert('', 'end', values=row)
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("DB Error", f"Failed to fetch products:\n{e}")
+
+    # Update heading when currency changes
+    def update_price_heading(*_):
+        current = currency_var.get()
+        if current == "price_php":
+            tree.heading("Price", text="Price (PHP)")
+        elif current == "price_usd":
+            tree.heading("Price", text="Price (USD)")
+        elif current == "price_krw":
+            tree.heading("Price", text="Price (KRW)")
+        refresh(tree)
+
+    currency_var.trace_add("write", update_price_heading)
+
+    # Popup for details
+    def show_product_popup(event):
+        selected = tree.selection()
+        if not selected:
+            return
+        pid = tree.item(selected[0])['values'][0]
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""SELECT name, category, description,
+                                  price_php, price_usd, price_krw, stock, image_url
+                           FROM products WHERE product_id=%s""", (pid,))
+            result = cur.fetchone()
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("DB Error", f"Failed to fetch product:\n{e}")
+            return
+
+        if not result:
+            return
+
+        name, category, desc, php, usd, krw, stock, image_url = result
+        popup = tk.Toplevel(inventory_win)
+        popup.title(name)
+        popup.geometry("400x500")
+        popup.configure(bg=BG_COLOR)
+
+        tk.Label(popup, text=name, font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+        tk.Label(popup, text=f"Category: {category}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Description: {desc}", font=FONT_LABEL, fg=FG_TEXT,
+                 bg=BG_COLOR, wraplength=380, justify="left").pack(pady=2)
+        tk.Label(popup, text=f"Price (PHP): {php}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Price (USD): {usd}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Price (KRW): {krw}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Stock: {stock}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+
+        img_label = tk.Label(popup, bg=BG_COLOR)
+        img_label.pack(pady=10)
+
+        try:
+            if image_url:
+                if image_url.startswith("http://") or image_url.startswith("https://"):
+                    with urllib.request.urlopen(image_url) as u:
+                        raw = u.read()
+                    im = Image.open(io.BytesIO(raw))
+                else:
+                    if not os.path.isabs(image_url):
+                        image_url = os.path.join(os.getcwd(), image_url)
+                    im = Image.open(image_url)
+                im = im.resize((150, 150))
+                photo = ImageTk.PhotoImage(im)
+                img_label.config(image=photo)
+                img_label.image = photo
+            else:
+                img_label.config(text="No image available", fg="white")
+        except Exception as e:
+            img_label.config(text="Error loading image", fg="red")
+
+    # Bind after function defined
+    tree.bind("<Double-1>", show_product_popup)
+
+    # Buttons frame
     btn_frame = tk.Frame(inventory_win, bg=BG_COLOR)
     btn_frame.pack(pady=8)
-
-    tk.Button(btn_frame, text="Add Product", bg="#4ee06e", fg=BTN_TEXT_COLOR, font=FONT_BTN,
-              activebackground="#3ac454", command=lambda: add_product(tree, refresh)).grid(row=0, column=0, padx=8)
-    tk.Button(btn_frame, text="Edit Product", bg="#f7d23a", fg=BTN_TEXT_COLOR, font=FONT_BTN,
-              activebackground="#e6b92e", command=lambda: edit_product(tree, refresh)).grid(row=0, column=1, padx=8)
-    tk.Button(btn_frame, text="Delete Product", bg="#f7d23a", fg="#23272f", font=FONT_BTN,
-              activebackground="#e84c4c", command=lambda: delete_product(tree, refresh)).grid(row=0, column=2, padx=8)
+    tk.Button(btn_frame, text="Add Product", bg="#4ee06e", fg=BTN_TEXT_COLOR,
+              font=FONT_BTN, activebackground="#3ac454",
+              command=lambda: add_product(tree, refresh)).grid(row=0, column=0, padx=8)
+    tk.Button(btn_frame, text="Edit Product", bg="#f7d23a", fg=BTN_TEXT_COLOR,
+              font=FONT_BTN, activebackground="#e6b92e",
+              command=lambda: edit_product(tree, refresh)).grid(row=0, column=1, padx=8)
+    tk.Button(btn_frame, text="Delete Product", bg="#f7d23a", fg="#23272f",
+              font=FONT_BTN, activebackground="#e84c4c",
+              command=lambda: delete_product(tree, refresh)).grid(row=0, column=2, padx=8)
 
     # Stock update
     stock_frame = tk.Frame(inventory_win, bg=BG_COLOR)
     stock_frame.pack(pady=6)
-    tk.Label(stock_frame, text="Set New Stock:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
+    tk.Label(stock_frame, text="Set New Stock:", font=FONT_LABEL,
+             fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
     simple_qty = tk.IntVar(value=1)
-    tk.Spinbox(stock_frame, from_=0, to=999, textvariable=simple_qty, width=6).pack(side="left", padx=4)
-    tk.Button(stock_frame, text="Update Stock", font=FONT_BTN, bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
-              activebackground=BTN_HOVER, command=lambda: update_stock(tree, simple_qty, None, refresh)).pack(side="left", padx=8)
+    tk.Spinbox(stock_frame, from_=0, to=999, textvariable=simple_qty,
+               width=6).pack(side="left", padx=4)
+    tk.Button(stock_frame, text="Update Stock", font=FONT_BTN,
+              bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
+              activebackground=BTN_HOVER,
+              command=lambda: update_stock(tree, simple_qty, user, refresh)).pack(side="left", padx=8)
 
-    tk.Button(inventory_win, text="Refresh", font=FONT_BTN, bg="#e0e1ea", fg="#23272f",
-              activebackground="#cacbd1", command=lambda: refresh(tree)).pack(pady=6)
-
-    def refresh(tree):
-        for row in tree.get_children():
-            tree.delete(row)
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT product_id, name, category, price_php, stock FROM products WHERE is_active=1")
-        for row in cur.fetchall():
-            tree.insert('', 'end', values=row)
-        conn.close()
-
+    # Refresh button
+    tk.Button(inventory_win, text="Refresh", font=FONT_BTN,
+              bg="#e0e1ea", fg="#23272f",
+              activebackground="#cacbd1",
+              command=lambda: refresh(tree)).pack(pady=6)
+    # Back button at the top
+    tk.Button(inventory_win, text="Back to Admin Panel",
+            font=FONT_BTN, bg="#e84c4c", fg="white",
+            activebackground="#c9302c",
+            command=lambda: (inventory_win.destroy(), admin_window.deiconify())
+            ).pack(pady=5)
+    # Initial load
     refresh(tree)
 
-    admin.mainloop()
 
-def open_user_roles_window():
-    win = tk.Toplevel()
+def open_user_roles_window(admin_window, user):
+    admin_window.withdraw()
+    win = tk.Toplevel(admin_window)
     win.title("Manage User Roles")
-    win.geometry("600x400")
+    win.geometry("600x500")
     win.configure(bg=BG_COLOR)
+    win.protocol("WM_DELETE_WINDOW", lambda: (win.destroy(), admin_window.deiconify()))
 
     tk.Label(win, text="User Roles", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
 
+    
     tree = ttk.Treeview(win, columns=("UserID", "Username", "Email", "Role"), show="headings", height=12)
     for col in ("UserID", "Username", "Email", "Role"):
         tree.heading(col, text=col)
@@ -392,7 +567,85 @@ def open_user_roles_window():
     tk.Button(win, text="Change Selected User's Role", font=FONT_BTN, bg=ACCENT_COLOR,
               fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER, command=change_role).pack(pady=6)
 
+    tk.Button(win, text="Back to Admin Panel",
+              font=FONT_BTN, bg="#e84c4c", fg="white",
+              activebackground="#c9302c",
+              command=lambda: (win.destroy(), admin_window.deiconify())
+              ).pack(pady=5)
     load_users()
+
+# ---------------- STAFF PANEL ----------------
+def staff_panel(user, parent_window=None):
+    if parent_window:
+        parent_window.withdraw()  # hide login while staff panel is open
+
+    staff = tk.Toplevel()
+    staff.title(f"Staff Panel - {user['username']}")
+    staff.geometry("1000x700")
+    staff.configure(bg=BG_COLOR)
+    staff.protocol("WM_DELETE_WINDOW", lambda: (parent_window.destroy()))
+
+    tk.Label(staff, text="Staff Panel - Inventory", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+
+    tree = ttk.Treeview(staff, columns=("ID", "Name", "Category", "Price", "Stock"), show="headings", height=12)
+    for col in ("ID", "Name", "Category", "Price", "Stock"):
+        tree.heading(col, text=col)
+        tree.column(col, anchor="center", width=120)
+    tree.pack(pady=8)
+
+    # Currency selector
+    currency_var = tk.StringVar(value="price_php")
+    currency_frame = tk.Frame(staff, bg=BG_COLOR)
+    currency_frame.pack()
+    tk.Label(currency_frame, text="Currency:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=5)
+    currency_cb = ttk.Combobox(currency_frame, textvariable=currency_var,
+                               values=["price_php", "price_usd", "price_krw"], state="readonly")
+    currency_cb.pack(side="left", padx=5)
+
+    def update_price_heading(*args):
+        cur = currency_var.get()
+        if cur == "price_php":
+            tree.heading("Price", text="Price (PHP)")
+        elif cur == "price_usd":
+            tree.heading("Price", text="Price (USD)")
+        elif cur == "price_krw":
+            tree.heading("Price", text="Price (KRW)")
+        refresh(tree)
+    currency_var.trace_add("write", update_price_heading)
+
+    def refresh(tree_widget):
+        for row in tree_widget.get_children():
+            tree_widget.delete(row)
+        conn = get_db()
+        cur = conn.cursor()
+        price_col = currency_var.get()
+        cur.execute(f"SELECT product_id, name, category, {price_col}, stock FROM products WHERE is_active=1")
+        for row in cur.fetchall():
+            tree_widget.insert('', 'end', values=row)
+        conn.close()
+
+    # Only update stock (no add/edit/delete)
+    stock_frame = tk.Frame(staff, bg=BG_COLOR)
+    stock_frame.pack(pady=6)
+    tk.Label(stock_frame, text="Set New Stock:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
+    simple_qty = tk.IntVar(value=1)
+    tk.Spinbox(stock_frame, from_=0, to=999, textvariable=simple_qty, width=6).pack(side="left", padx=4)
+    tk.Button(stock_frame, text="Update Stock", font=FONT_BTN, bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
+              activebackground=BTN_HOVER,
+              command=lambda: update_stock(tree, simple_qty, user, refresh)).pack(side="left", padx=8)
+
+    tk.Button(staff, text="Refresh", font=FONT_BTN, bg="#e0e1ea", fg="#23272f",
+              activebackground="#cacbd1", command=lambda: refresh(tree)).pack(pady=6)
+    tk.Button(
+        staff, text="Logout", font=FONT_BTN, bg="#e84c4c", fg="white",
+        activebackground="#c9302c",
+        command=lambda: (staff.destroy(), parent_window.deiconify() if parent_window else login_window())
+    ).pack(pady=10)
+
+
+    refresh(tree)
+    staff.mainloop()
+
 
 
 # ---------------- Admin Helper Functions ----------------
@@ -402,6 +655,7 @@ def add_product(tree, refresh):
     win.geometry("420x420")
     fields = ["Name", "Category", "Price PHP", "Price USD", "Price KRW", "Stock", "Description"]
     vars = [tk.StringVar() for _ in fields]
+    image_path = tk.StringVar()
     categories = ['game_key', 'in_game_currency', 'merch']
 
     for i, label in enumerate(fields):
@@ -412,20 +666,55 @@ def add_product(tree, refresh):
         else:
             tk.Entry(win, textvariable=vars[i]).grid(row=i, column=1, pady=5)
 
+    # ---------------- IMAGE UPLOAD FIELD ----------------
+    image_path = tk.StringVar()
+    tk.Label(win, text="Product Image").grid(row=len(fields), column=0, sticky='e', pady=5, padx=5)
+
+    img_frame = tk.Frame(win)
+    img_frame.grid(row=len(fields), column=1, pady=5)
+
+    img_label = tk.Label(img_frame, text="No image selected", width=25, anchor="w")
+    img_label.pack(side="left")
+
+    def upload_image():
+        from tkinter import filedialog
+        import os, shutil
+        file = filedialog.askopenfilename(
+            filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.gif")])
+        if file:
+            filename = os.path.basename(file)
+            # store in assets/images
+            dest_dir = os.path.join(os.getcwd(), "assets", "images")
+            os.makedirs(dest_dir, exist_ok=True)
+            dest_path = os.path.join(dest_dir, filename)
+            shutil.copy(file, dest_path)
+            rel_path = os.path.relpath(dest_path, os.getcwd())
+            image_path.set(rel_path)
+            img_label.config(text=filename)
+
+    tk.Button(img_frame, text="Browse", command=upload_image).pack(side="right")
+    # ---------------- END IMAGE UPLOAD ------------------
+
+    # save to database
     def save():
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("""INSERT INTO products 
-            (name, category, price_php, price_usd, price_krw, stock, description)
-            VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-            [v.get() for v in vars])
-        conn.commit()
-        conn.close()
-        win.destroy()
-        refresh(tree)
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""INSERT INTO products
+                (name, category, price_php, price_usd, price_krw, stock, description, image_url)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                [v.get() for v in vars] + [image_path.get()])
+            conn.commit()
+            conn.close()
+            messagebox.showinfo("Saved", "Product added successfully!")
+            win.destroy()
+            refresh(tree)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not add product:\n{e}")
 
-    tk.Button(win, text="Save", bg="#4ee06e", fg=BTN_TEXT_COLOR, command=save).grid(row=len(fields), column=1, pady=14)
-
+    tk.Button(win, text="Save", bg="#4ee06e", fg=BTN_TEXT_COLOR,
+              command=save).grid(row=len(fields)+1, column=1, pady=14)
+    
 def edit_product(tree, refresh):
     selected = tree.selection()
     if not selected:
