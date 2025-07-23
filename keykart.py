@@ -653,7 +653,7 @@ def add_product(tree, refresh):
     win = tk.Toplevel()
     win.title("Add Product")
     win.geometry("420x420")
-    fields = ["Name", "Category", "Price PHP", "Price USD", "Price KRW", "Stock", "Description"]
+    fields = ["Name", "Category", "Price PHP", "Stock", "Description"]
     vars = [tk.StringVar() for _ in fields]
     image_path = tk.StringVar()
     categories = ['game_key', 'in_game_currency', 'merch']
@@ -698,12 +698,33 @@ def add_product(tree, refresh):
     # save to database
     def save():
         try:
+            # read the PHP price from the form
+            php_price = float(vars[2].get())
+        except ValueError:
+            messagebox.showerror("Error", "Price PHP must be a valid number.")
+            return
+
+        usd_rate = 58.0   # 1 USD = 58 PHP
+        krw_rate = 23.6   # 1 PHP = 23.6 KRW
+
+        # Auto‑convert to USD and KRW
+        usd_price = round(php_price / usd_rate, 2)
+        krw_price = round(php_price * krw_rate, 0)
+
+        try:
             conn = get_db()
             cur = conn.cursor()
             cur.execute("""INSERT INTO products
                 (name, category, price_php, price_usd, price_krw, stock, description, image_url)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                [v.get() for v in vars] + [image_path.get()])
+                (vars[0].get(),            # name
+                 vars[1].get(),            # category
+                 php_price,                # price_php
+                 usd_price,                # auto price_usd
+                 krw_price,                # auto price_krw
+                 vars[3].get(),            # stock
+                 vars[4].get(),            # description
+                 image_path.get()))        # image_url
             conn.commit()
             conn.close()
             messagebox.showinfo("Saved", "Product added successfully!")
@@ -714,6 +735,7 @@ def add_product(tree, refresh):
 
     tk.Button(win, text="Save", bg="#4ee06e", fg=BTN_TEXT_COLOR,
               command=save).grid(row=len(fields)+1, column=1, pady=14)
+
     
 def edit_product(tree, refresh):
     selected = tree.selection()
