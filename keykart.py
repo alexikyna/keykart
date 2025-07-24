@@ -6,6 +6,7 @@ import urllib.request, io
 from tkinter import filedialog
 import os
 import shutil
+import datetime
 
 
 # --- Global Styles ---
@@ -24,7 +25,7 @@ def get_db():
     return mysql.connector.connect(
         host="localhost",
         user="root",
-        password="DLSU1234!",
+        password="root",
         database="keykart"
     )
 
@@ -537,7 +538,37 @@ def open_inventory_view(admin_window, user):
               bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
               activebackground=BTN_HOVER,
               command=lambda: update_stock(tree, simple_qty, user, refresh)).pack(side="left", padx=8)
-
+    
+    #Generate sales report
+    stock_frame2 = tk.Frame(inventory_win, bg=BG_COLOR)
+    stock_frame2.pack(pady=6)
+    tk.Label(stock_frame, text="Generate a sales report from (MM-DD-YYYY) ", font=FONT_LABEL,
+             fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
+    mstart = tk.IntVar(value=1)
+    dstart = tk.IntVar(value=1)
+    ystart = tk.IntVar(value=1900)
+    mend = tk.IntVar(value=1)
+    dend = tk.IntVar(value=1)
+    yend = tk.IntVar(value=1900)
+    tk.Spinbox(stock_frame, from_=1, to=12, textvariable=mstart,
+               width=6).pack(side="left", padx=4)
+    tk.Spinbox(stock_frame, from_=1, to=31, textvariable=dstart,
+               width=6).pack(side="left", padx=4)
+    tk.Spinbox(stock_frame, from_=1900, to=3000, textvariable=ystart,
+               width=6).pack(side="left", padx=4)
+    tk.Label(stock_frame, text=" to ", font=FONT_LABEL,
+             fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
+    tk.Spinbox(stock_frame, from_=1, to=12, textvariable=mend,
+               width=6).pack(side="left", padx=4)
+    tk.Spinbox(stock_frame, from_=1, to=31, textvariable=dend,
+               width=6).pack(side="left", padx=4)
+    tk.Spinbox(stock_frame, from_=1900, to=3000, textvariable=yend,
+               width=6).pack(side="left", padx=4)
+    tk.Button(stock_frame, text="Generate", font=FONT_BTN,
+              bg=ACCENT_COLOR, fg="#00aaff",
+              activebackground=BTN_HOVER,
+              command=lambda: generate_sales_report(datetime.date(ystart, mstart, dstart), datetime.date(yend, mend, dend))).pack(side="left", padx=8)
+    
     # Refresh button
     tk.Button(inventory_win, text="Refresh", font=FONT_BTN,
               bg="#e0e1ea", fg="#23272f",
@@ -623,13 +654,32 @@ def open_user_roles_window(admin_window, user):
                 load_users()
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to change role:\n{e}")
+    def delete_user():
+        selected = tree.selection()
+        if not selected:
+            messagebox.showwarning("Select", "Choose a user.")
+            return
+        user_id = tree.item(selected[0])['values']
+        if messagebox.askyesno("Are you sure?", "This user will be deleted and archived. This action cannot be undone. Proceed?"):
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("""DELETE FROM user where user_id = %s""", (user_id))
+                result = cur.fetchone()
+                conn.close()
+            except Exception as e:
+                messagebox.showerror("DB Error", f"Could not delete user:\n{e}")
+            return
 
     tk.Button(win, text="Change Selected User's Role", font=FONT_BTN, bg=ACCENT_COLOR,
               fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER, command=change_role).pack(pady=6)
+    
+    tk.Button(win, text="Delete User", font=FONT_BTN, bg="#ff0000",
+              fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER, command=delete_user).pack(pady=6)
 
     tk.Button(win, text="Back to Admin Panel",
-              font=FONT_BTN, bg="#e84c4c", fg="white",
-              activebackground="#c9302c",
+              font=FONT_BTN, bg="#ffffff", fg="black",
+              activebackground="#aaaaaa",
               command=lambda: (win.destroy(), admin_window.deiconify())
               ).pack(pady=5)
     load_users()
@@ -921,6 +971,20 @@ def update_stock(tree, qty_var, user, refresh):
         refresh(tree)
     except Exception as e:
         messagebox.showerror("Error", f"Could not update stock:\n{e}")
+
+def generate_sales_report(startdate, enddate):
+    if startdate > enddate:
+        messagebox.showerror("Error", "Start date must come before end date!")
+        return
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.callproc('sp_generate_sales_report', (startdate, enddate))
+        conn.commit()
+        conn.close()
+        messagebox.showinfo("Notice", "Sales report generated.")
+    except Exception as e:
+        messagebox.showerror("Error", f"Sales report failed to generate:\n{e}")
 
 # ---- RUN LOGIN ----
 if __name__ == "__main__":
