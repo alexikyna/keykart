@@ -101,7 +101,7 @@ def shop_window(user, parent_window=None):
 
     shop = tk.Toplevel()
     shop.title(f"KeyKart Shop - {user['username']}")
-    shop.geometry("1100x700")
+    shop.geometry("1100x750")
     shop.configure(bg=BG_COLOR)
     shop.protocol("WM_DELETE_WINDOW", lambda: (parent_window.destroy()))
 
@@ -116,11 +116,10 @@ def shop_window(user, parent_window=None):
                                values=["price_php", "price_usd", "price_krw"], state="readonly")
     currency_cb.pack(side="left", padx=5)
 
-    # --- Notebook Tabs ---
     notebook = ttk.Notebook(shop)
     notebook.pack(fill="both", expand=True)
 
-    # ---------------- Tab 1: Product Catalog ----------------
+    # =============== Tab 1: Product Catalog ===============
     catalog_tab = tk.Frame(notebook, bg=BG_COLOR)
     notebook.add(catalog_tab, text="Product Catalog")
 
@@ -131,7 +130,6 @@ def shop_window(user, parent_window=None):
         tree.column(col, anchor="center", width=150)
     tree.pack(pady=10, fill="both", expand=True)
 
-    # Cart & actions
     qty_frame = tk.Frame(catalog_tab, bg=BG_COLOR)
     qty_frame.pack(pady=6)
     tk.Label(qty_frame, text="Quantity:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
@@ -142,12 +140,50 @@ def shop_window(user, parent_window=None):
     btn_frame.pack(pady=6)
     tk.Button(btn_frame, text="Add to Cart", bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
               font=FONT_BTN, width=15, activebackground=BTN_HOVER,
-              command=lambda: add_to_cart(tree, simple_qty, cart)).grid(row=0, column=0, padx=8)
-    tk.Button(btn_frame, text="Checkout", bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
-              font=FONT_BTN, width=15, activebackground=BTN_HOVER,
-              command=lambda: checkout(cart, user)).grid(row=0, column=1, padx=8)
+              command=lambda: add_to_cart(tree, simple_qty)).grid(row=0, column=0, padx=8)
 
-    # ---------------- Tab 2: Order History ----------------
+    # =============== Tab 2: Cart ===============
+    cart_tab = tk.Frame(notebook, bg=BG_COLOR)
+    notebook.add(cart_tab, text="My Cart")
+
+    cart_tree = ttk.Treeview(cart_tab, columns=("Name", "Qty", "Price", "Subtotal"),
+                             show="headings", height=12)
+    for col in ("Name", "Qty", "Price", "Subtotal"):
+        cart_tree.heading(col, text=col)
+        cart_tree.column(col, anchor="center", width=180)
+    cart_tree.pack(pady=10, fill="both", expand=True)
+
+    cart_total_label = tk.Label(cart_tab, text="Total: 0", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR)
+    cart_total_label.pack(pady=5)
+
+    def update_cart_view():
+        cart_tree.delete(*cart_tree.get_children())
+        total = 0
+        for item in cart:
+            pname, qty, price = item[1], item[2], item[3]
+            subtotal = qty * price
+            total += subtotal
+            cart_tree.insert("", "end", values=(pname, qty, price, subtotal))
+        cart_total_label.config(text=f"Total: {total:.2f}")
+
+    def remove_from_cart():
+        selected = cart_tree.selection()
+        if not selected:
+            messagebox.showwarning("Cart", "Select an item to remove.")
+            return
+        index = cart_tree.index(selected[0])
+        cart.pop(index)
+        update_cart_view()
+
+    tk.Button(cart_tab, text="Remove Selected", bg="#e84c4c", fg="white",
+              font=FONT_BTN, activebackground="#c9302c",
+              command=remove_from_cart).pack(pady=6)
+
+    tk.Button(cart_tab, text="Checkout", bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
+              font=FONT_BTN, activebackground=BTN_HOVER,
+              command=lambda: checkout(user)).pack(pady=6)
+
+    # =============== Tab 3: Order History ===============
     history_tab = tk.Frame(notebook, bg=BG_COLOR)
     notebook.add(history_tab, text="Order History")
 
@@ -162,26 +198,55 @@ def shop_window(user, parent_window=None):
               font=FONT_BTN, activebackground="#c9302c",
               command=lambda: cancel_order(orders_tree, user, load_orders)).pack(pady=6)
 
-    # --- Shared Cart and Functions ---
-    cart = []
+    # === Data structures ===
+    cart = []  # (product_id, name, qty, price)
 
+    # === Functions ===
     def refresh_products():
         tree.delete(*tree.get_children())
-        conn = get_db(); cur = conn.cursor()
+        conn = get_db()
+        cur = conn.cursor()
         price_col = currency_var.get()
         cur.execute(f"SELECT product_id, name, category, {price_col}, stock FROM products WHERE is_active=1")
         for row in cur.fetchall():
             tree.insert('', 'end', values=row)
         conn.close()
 
+    def cancel_order(tree_widget, user, refresh_func):
+        selected = tree_widget.selection()
+        if not selected:
+            messagebox.showwarning("Select", "Choose an order to cancel.")
+            return
+
+        order_data = tree_widget.item(selected[0])['values']
+        order_id, _, _, status = order_data
+
+        if status.lower() != "pending":
+            messagebox.showinfo("Not Allowed",
+                                f"Only pending orders can be cancelled. Order #{order_id} is '{status}'.")
+            return
+
+        if messagebox.askyesno("Cancel Order", f"Are you sure you want to cancel Order #{order_id}?"):
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.callproc('sp_cancel_order', (order_id,))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Cancelled", f"Order #{order_id} has been cancelled.")
+                refresh_func()  # reload orders table
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to cancel order:\n{e}")
+
+
+
+
     def load_orders():
         orders_tree.delete(*orders_tree.get_children())
         conn = get_db(); cur = conn.cursor()
-        price_col = currency_var.get()
-        # map chosen currency to correct column in orders
-        if price_col == "price_php":
+        if currency_var.get() == "price_php":
             cur.execute("SELECT order_id, order_date, total_php, status FROM orders WHERE user_id=%s", (user['user_id'],))
-        elif price_col == "price_usd":
+        elif currency_var.get() == "price_usd":
             cur.execute("SELECT order_id, order_date, total_usd, status FROM orders WHERE user_id=%s", (user['user_id'],))
         else:
             cur.execute("SELECT order_id, order_date, total_krw, status FROM orders WHERE user_id=%s", (user['user_id'],))
@@ -189,7 +254,51 @@ def shop_window(user, parent_window=None):
             orders_tree.insert('', 'end', values=row)
         conn.close()
 
-    # currency change updates both
+    def add_to_cart(tree_widget, qty_var):
+        selected = tree_widget.selection()
+        if not selected:
+            messagebox.showwarning("Select", "Choose a product!")
+            return
+        pid, name, cat, price_str, stock_str = tree_widget.item(selected[0])['values']
+
+        # ✅ Convert to proper types
+        try:
+            price = float(price_str)
+            stock = int(stock_str)
+        except ValueError:
+            messagebox.showerror("Data Error", "Invalid price or stock value.")
+            return
+
+        qty = qty_var.get()
+        if qty > stock:
+            messagebox.showwarning("Stock", "Not enough stock!")
+            return
+
+        # ✅ Now append numeric price
+        cart.append((pid, name, qty, price))
+        update_cart_view()
+        messagebox.showinfo("Added", f"Added {qty} of {name} to cart.")
+
+
+    def checkout(user):
+        if not cart:
+            messagebox.showwarning("Cart", "Cart is empty!")
+            return
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            for item in cart:
+                cur.callproc('sp_place_order', (user['user_id'], item[0], item[2]))
+            conn.commit()
+            conn.close()
+            cart.clear()
+            update_cart_view()
+            messagebox.showinfo("Order", "Order placed! Check your email for delivery info.")
+            refresh_products()
+            load_orders()
+        except Exception as e:
+            messagebox.showerror("Checkout Failed", str(e))
+
     def update_currency(*args):
         if currency_var.get() == "price_php":
             tree.heading("Price", text="Price (PHP)")
@@ -205,39 +314,7 @@ def shop_window(user, parent_window=None):
 
     currency_var.trace_add("write", update_currency)
 
-    # Cart management
-    def add_to_cart(tree_widget, qty_var, cart_list):
-        selected = tree_widget.selection()
-        if not selected:
-            messagebox.showwarning("Select", "Choose a product!")
-            return
-        pid, name, cat, price, stock = tree_widget.item(selected[0])['values']
-        qty = qty_var.get()
-        if qty > stock:
-            messagebox.showwarning("Stock", "Not enough stock!")
-            return
-        cart_list.append((pid, qty, price))
-        messagebox.showinfo("Added", f"Added {qty} of {name} to cart.")
-
-    def checkout(cart_list, user):
-        if not cart_list:
-            messagebox.showwarning("Cart", "Cart is empty!")
-            return
-        try:
-            conn = get_db()
-            cur = conn.cursor()
-            for item in cart_list:
-                cur.callproc('sp_place_order', (user['user_id'], item[0], item[1]))
-            conn.commit()
-            conn.close()
-            cart_list.clear()
-            messagebox.showinfo("Order", "Order placed! Check your email for delivery info.")
-            refresh_products()
-            load_orders()
-        except Exception as e:
-            messagebox.showerror("Checkout Failed", str(e))
-
-    # --- Initial Load ---
+    # Initial load
     refresh_products()
     load_orders()
 
@@ -247,6 +324,7 @@ def shop_window(user, parent_window=None):
               command=lambda: (shop.destroy(), parent_window.deiconify() if parent_window else login_window())).pack(pady=10)
 
     shop.mainloop()
+
 
 
 
