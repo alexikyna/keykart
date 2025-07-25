@@ -156,42 +156,19 @@ def shop_window(user, parent_window=None):
     cart_total_label = tk.Label(cart_tab, text="Total: 0", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR)
     cart_total_label.pack(pady=5)
 
-    def update_cart_view():
-        cart_tree.delete(*cart_tree.get_children())
-        total = 0
-        for item in cart:
-            pname, qty, price = item[1], item[2], item[3]
-            subtotal = qty * price
-            total += subtotal
-            cart_tree.insert("", "end", values=(pname, qty, price, subtotal))
-        cart_total_label.config(text=f"Total: {total:.2f}")
-
-    def remove_from_cart():
-        selected = cart_tree.selection()
-        if not selected:
-            messagebox.showwarning("Cart", "Select an item to remove.")
-            return
-        index = cart_tree.index(selected[0])
-        cart.pop(index)
-        update_cart_view()
-
-    tk.Button(cart_tab, text="Remove Selected", bg="#e84c4c", fg="white",
-              font=FONT_BTN, activebackground="#c9302c",
-              command=remove_from_cart).pack(pady=6)
-
-    tk.Button(cart_tab, text="Checkout", bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
-              font=FONT_BTN, activebackground=BTN_HOVER,
-              command=lambda: checkout(user)).pack(pady=6)
-
     # =============== Tab 3: Order History ===============
     history_tab = tk.Frame(notebook, bg=BG_COLOR)
     notebook.add(history_tab, text="Order History")
 
-    orders_tree = ttk.Treeview(history_tab, columns=("OrderID", "Date", "Total", "Status"),
+    orders_tree = ttk.Treeview(history_tab,
+                               columns=("OrderID", "Products", "Date", "Total", "Status"),
                                show="headings", height=12)
-    for col in ("OrderID", "Date", "Total", "Status"):
+    for col in ("OrderID", "Products", "Date", "Total", "Status"):
         orders_tree.heading(col, text=col)
-        orders_tree.column(col, anchor="center", width=180)
+        if col == "Products":
+            orders_tree.column(col, anchor="w", width=250)
+        else:
+            orders_tree.column(col, anchor="center", width=120)
     orders_tree.pack(pady=10, fill="both", expand=True)
 
     tk.Button(history_tab, text="Cancel Selected Order", bg="#e84c4c", fg="white",
@@ -212,47 +189,24 @@ def shop_window(user, parent_window=None):
             tree.insert('', 'end', values=row)
         conn.close()
 
-    def cancel_order(tree_widget, user, refresh_func):
-        selected = tree_widget.selection()
+    def update_cart_view():
+        cart_tree.delete(*cart_tree.get_children())
+        total = 0.0
+        for item in cart:
+            pname, qty, price = item[1], item[2], item[3]
+            subtotal = qty * price
+            total += subtotal
+            cart_tree.insert("", "end", values=(pname, qty, f"{price:.2f}", f"{subtotal:.2f}"))
+        cart_total_label.config(text=f"Total: {total:.2f}")
+
+    def remove_from_cart():
+        selected = cart_tree.selection()
         if not selected:
-            messagebox.showwarning("Select", "Choose an order to cancel.")
+            messagebox.showwarning("Cart", "Select an item to remove.")
             return
-
-        order_data = tree_widget.item(selected[0])['values']
-        order_id, _, _, status = order_data
-
-        if status.lower() != "pending":
-            messagebox.showinfo("Not Allowed",
-                                f"Only pending orders can be cancelled. Order #{order_id} is '{status}'.")
-            return
-
-        if messagebox.askyesno("Cancel Order", f"Are you sure you want to cancel Order #{order_id}?"):
-            try:
-                conn = get_db()
-                cur = conn.cursor()
-                cur.callproc('sp_cancel_order', (order_id,))
-                conn.commit()
-                conn.close()
-                messagebox.showinfo("Cancelled", f"Order #{order_id} has been cancelled.")
-                refresh_func()  # reload orders table
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to cancel order:\n{e}")
-
-
-
-
-    def load_orders():
-        orders_tree.delete(*orders_tree.get_children())
-        conn = get_db(); cur = conn.cursor()
-        if currency_var.get() == "price_php":
-            cur.execute("SELECT order_id, order_date, total_php, status FROM orders WHERE user_id=%s", (user['user_id'],))
-        elif currency_var.get() == "price_usd":
-            cur.execute("SELECT order_id, order_date, total_usd, status FROM orders WHERE user_id=%s", (user['user_id'],))
-        else:
-            cur.execute("SELECT order_id, order_date, total_krw, status FROM orders WHERE user_id=%s", (user['user_id'],))
-        for row in cur.fetchall():
-            orders_tree.insert('', 'end', values=row)
-        conn.close()
+        index = cart_tree.index(selected[0])
+        cart.pop(index)
+        update_cart_view()
 
     def add_to_cart(tree_widget, qty_var):
         selected = tree_widget.selection()
@@ -260,25 +214,19 @@ def shop_window(user, parent_window=None):
             messagebox.showwarning("Select", "Choose a product!")
             return
         pid, name, cat, price_str, stock_str = tree_widget.item(selected[0])['values']
-
-        # ✅ Convert to proper types
         try:
             price = float(price_str)
             stock = int(stock_str)
         except ValueError:
-            messagebox.showerror("Data Error", "Invalid price or stock value.")
+            messagebox.showerror("Data Error", "Invalid price or stock.")
             return
-
         qty = qty_var.get()
         if qty > stock:
             messagebox.showwarning("Stock", "Not enough stock!")
             return
-
-        # ✅ Now append numeric price
         cart.append((pid, name, qty, price))
         update_cart_view()
         messagebox.showinfo("Added", f"Added {qty} of {name} to cart.")
-
 
     def checkout(user):
         if not cart:
@@ -299,6 +247,58 @@ def shop_window(user, parent_window=None):
         except Exception as e:
             messagebox.showerror("Checkout Failed", str(e))
 
+    def cancel_order(tree_widget, user, refresh_func):
+        selected = tree_widget.selection()
+        if not selected:
+            messagebox.showwarning("Select", "Choose an order to cancel.")
+            return
+        order_data = tree_widget.item(selected[0])['values']
+        order_id, _, _, _, status = order_data
+        if str(status).lower() != "pending":
+            messagebox.showinfo("Not Allowed", f"Only pending orders can be cancelled. Order #{order_id} is '{status}'.")
+            return
+        if messagebox.askyesno("Cancel Order", f"Are you sure you want to cancel Order #{order_id}?"):
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.callproc('sp_cancel_order', (order_id,))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Cancelled", f"Order #{order_id} has been cancelled.")
+                refresh_func()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to cancel order:\n{e}")
+
+    def load_orders():
+        orders_tree.delete(*orders_tree.get_children())
+        conn = get_db()
+        cur = conn.cursor()
+        # pick total column based on currency
+        if currency_var.get() == "price_php":
+            total_col = "total_php"
+        elif currency_var.get() == "price_usd":
+            total_col = "total_usd"
+        else:
+            total_col = "total_krw"
+        # fetch order info with product names
+        query = f"""
+            SELECT o.order_id,
+                   GROUP_CONCAT(p.name SEPARATOR ', ') AS products,
+                   o.order_date,
+                   o.{total_col},
+                   o.status
+            FROM orders o
+            JOIN order_items oi ON o.order_id = oi.order_id
+            JOIN products p ON oi.product_id = p.product_id
+            WHERE o.user_id=%s
+            GROUP BY o.order_id, o.order_date, o.{total_col}, o.status
+            ORDER BY o.order_date DESC
+        """
+        cur.execute(query, (user['user_id'],))
+        for row in cur.fetchall():
+            orders_tree.insert('', 'end', values=row)
+        conn.close()
+
     def update_currency(*args):
         if currency_var.get() == "price_php":
             tree.heading("Price", text="Price (PHP)")
@@ -318,6 +318,14 @@ def shop_window(user, parent_window=None):
     refresh_products()
     load_orders()
 
+    # Cart tab buttons
+    tk.Button(cart_tab, text="Remove Selected", bg="#e84c4c", fg="white",
+              font=FONT_BTN, activebackground="#c9302c",
+              command=remove_from_cart).pack(pady=6)
+    tk.Button(cart_tab, text="Checkout", bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
+              font=FONT_BTN, activebackground=BTN_HOVER,
+              command=lambda: checkout(user)).pack(pady=6)
+
     # Logout
     tk.Button(shop, text="Logout", font=FONT_BTN, bg="#e84c4c", fg="white",
               activebackground="#c9302c",
@@ -330,340 +338,210 @@ def shop_window(user, parent_window=None):
 
 # ---------------- ADMIN PANEL ----------------
 def admin_panel(user, parent_window):
-    parent_window.withdraw()
+    if parent_window:
+        parent_window.withdraw()
 
     admin = tk.Toplevel(parent_window)
     admin.title(f"Admin Panel - {user['username']}")
-    admin.geometry("700x500")
+    admin.geometry("1100x700")
     admin.configure(bg=BG_COLOR)
     admin.protocol("WM_DELETE_WINDOW", lambda: parent_window.destroy())
 
-    tk.Label(admin, text="Admin Panel", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=20)
+    tk.Label(admin, text=f"Admin Panel - Welcome {user['username']}",
+             font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=8)
 
-    tk.Button(admin,
-            text="Manage Product Inventory",
-            font=FONT_BTN, width=30, bg="#4ee06e", fg=BTN_TEXT_COLOR,
-            activebackground="#3ac454",
-            command=lambda: open_inventory_view(admin, user)).pack(pady=10)
+    # Create Notebook
+    notebook = ttk.Notebook(admin)
+    notebook.pack(fill="both", expand=True)
 
-    tk.Button(admin,
-            text="Manage User Roles",
-            font=FONT_BTN, width=30, bg="#3da6f0", fg="white",
-            activebackground="#2b8ad4",
-            command=lambda: open_user_roles_window(admin, user)).pack(pady=10)
+    # ===================== INVENTORY TAB =====================
+    inventory_tab = tk.Frame(notebook, bg=BG_COLOR)
+    notebook.add(inventory_tab, text="Manage Inventory")
 
-
-    # Logout button: close admin window and show login again
-    tk.Button(
-        admin, text="Logout", font=FONT_BTN, bg="#e84c4c", fg="white",
-        activebackground="#c9302c",
-        command=lambda: (admin.destroy(), parent_window.deiconify() if parent_window else login_window())
-    ).pack(pady=10)
-
-    
-def open_inventory_view(admin_window, user):
-    admin_window.withdraw()
-    inventory_win = tk.Toplevel(admin_window)
-    inventory_win.title("Product Inventory")
-    inventory_win.geometry("1000x700")
-    inventory_win.configure(bg=BG_COLOR)
-    inventory_win.protocol("WM_DELETE_WINDOW", lambda: (inventory_win.destroy(), admin_window.deiconify()))
-
-    tk.Label(inventory_win, text="Product Inventory", font=FONT_HEADER,
-             fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
-
-    # Table
-    tree = ttk.Treeview(inventory_win,
-                        columns=("ID", "Name", "Category", "Price", "Stock"),
-                        show="headings", height=12)
+    inv_tree = ttk.Treeview(inventory_tab,
+                            columns=("ID", "Name", "Category", "Price", "Stock"),
+                            show="headings", height=12)
     for col in ("ID", "Name", "Category", "Price", "Stock"):
-        tree.heading(col, text=col)
-        tree.column(col, anchor="center", width=120)
-    tree.pack(pady=8)
+        inv_tree.heading(col, text=col)
+        inv_tree.column(col, anchor="center", width=120)
+    inv_tree.pack(pady=8, fill="both", expand=True)
 
-    # Currency selector
     currency_var = tk.StringVar(value="price_php")
-    currency_frame = tk.Frame(inventory_win, bg=BG_COLOR)
+    currency_frame = tk.Frame(inventory_tab, bg=BG_COLOR)
     currency_frame.pack()
-    tk.Label(currency_frame, text="Currency:", font=FONT_LABEL,
-             fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=5)
+    tk.Label(currency_frame, text="Currency:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=5)
     currency_cb = ttk.Combobox(currency_frame, textvariable=currency_var,
                                values=["price_php", "price_usd", "price_krw"],
                                state="readonly")
     currency_cb.pack(side="left", padx=5)
 
-    # Refresh function
-    def refresh(tree_widget):
-        tree_widget.delete(*tree_widget.get_children())
+    def refresh_inventory():
+        inv_tree.delete(*inv_tree.get_children())
         try:
             conn = get_db()
             cur = conn.cursor()
-            price_col = currency_var.get()
-            cur.execute(f"SELECT product_id, name, category, {price_col}, stock FROM products WHERE is_active=1")
+            cur.execute(f"SELECT product_id, name, category, {currency_var.get()}, stock FROM products WHERE is_active=1")
             for row in cur.fetchall():
-                tree_widget.insert('', 'end', values=row)
+                inv_tree.insert('', 'end', values=row)
             conn.close()
         except Exception as e:
             messagebox.showerror("DB Error", f"Failed to fetch products:\n{e}")
 
-    # Update heading when currency changes
     def update_price_heading(*_):
         current = currency_var.get()
         if current == "price_php":
-            tree.heading("Price", text="Price (PHP)")
+            inv_tree.heading("Price", text="Price (PHP)")
         elif current == "price_usd":
-            tree.heading("Price", text="Price (USD)")
-        elif current == "price_krw":
-            tree.heading("Price", text="Price (KRW)")
-        refresh(tree)
+            inv_tree.heading("Price", text="Price (USD)")
+        else:
+            inv_tree.heading("Price", text="Price (KRW)")
+        refresh_inventory()
 
     currency_var.trace_add("write", update_price_heading)
 
-    # Popup for details
-    def show_product_popup(event):
-        selected = tree.selection()
-        if not selected:
-            return
-        pid = tree.item(selected[0])['values'][0]
-        try:
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("""SELECT name, category, description,
-                                  price_php, price_usd, price_krw, stock, image_url
-                           FROM products WHERE product_id=%s""", (pid,))
-            result = cur.fetchone()
-            conn.close()
-        except Exception as e:
-            messagebox.showerror("DB Error", f"Failed to fetch product:\n{e}")
-            return
-
-        if not result:
-            return
-
-        name, category, desc, php, usd, krw, stock, image_url = result
-        popup = tk.Toplevel(inventory_win)
-        popup.title(name)
-        popup.geometry("400x500")
-        popup.configure(bg=BG_COLOR)
-
-        tk.Label(popup, text=name, font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
-        tk.Label(popup, text=f"Category: {category}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Description: {desc}", font=FONT_LABEL, fg=FG_TEXT,
-                 bg=BG_COLOR, wraplength=380, justify="left").pack(pady=2)
-        tk.Label(popup, text=f"Price (PHP): {php}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Price (USD): {usd}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Price (KRW): {krw}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Stock: {stock}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-
-        img_label = tk.Label(popup, bg=BG_COLOR)
-        img_label.pack(pady=10)
-
-        try:
-            if image_url:
-                if image_url.startswith("http://") or image_url.startswith("https://"):
-                    with urllib.request.urlopen(image_url) as u:
-                        raw = u.read()
-                    im = Image.open(io.BytesIO(raw))
-                else:
-                    if not os.path.isabs(image_url):
-                        image_url = os.path.join(os.getcwd(), image_url)
-                    im = Image.open(image_url)
-                im = im.resize((150, 150))
-                photo = ImageTk.PhotoImage(im)
-                img_label.config(image=photo)
-                img_label.image = photo
-            else:
-                img_label.config(text="No image available", fg="white")
-        except Exception as e:
-            img_label.config(text="Error loading image", fg="red")
-
-    # Bind after function defined
-    tree.bind("<Double-1>", show_product_popup)
-
-    # Buttons frame
-    btn_frame = tk.Frame(inventory_win, bg=BG_COLOR)
-    btn_frame.pack(pady=8)
-    tk.Button(btn_frame, text="Add Product", bg="#4ee06e", fg=BTN_TEXT_COLOR,
-              font=FONT_BTN, activebackground="#3ac454",
-              command=lambda: add_product(tree, refresh)).grid(row=0, column=0, padx=8)
-    tk.Button(btn_frame, text="Edit Product", bg="#f7d23a", fg=BTN_TEXT_COLOR,
-              font=FONT_BTN, activebackground="#e6b92e",
-              command=lambda: edit_product(tree, refresh)).grid(row=0, column=1, padx=8)
-    tk.Button(btn_frame, text="Delete Product", bg="#f7d23a", fg="#23272f",
-              font=FONT_BTN, activebackground="#e84c4c",
-              command=lambda: delete_product(tree, refresh)).grid(row=0, column=2, padx=8)
-
-    # Stock update
-    stock_frame = tk.Frame(inventory_win, bg=BG_COLOR)
+    # Stock update controls
+    stock_frame = tk.Frame(inventory_tab, bg=BG_COLOR)
     stock_frame.pack(pady=6)
-    tk.Label(stock_frame, text="Set New Stock:", font=FONT_LABEL,
-             fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
-    simple_qty = tk.IntVar(value=1)
-    tk.Spinbox(stock_frame, from_=0, to=999, textvariable=simple_qty,
-               width=6).pack(side="left", padx=4)
+    tk.Label(stock_frame, text="Set New Stock:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
+    qty_var = tk.IntVar(value=1)
+    tk.Spinbox(stock_frame, from_=0, to=999, textvariable=qty_var, width=6).pack(side="left", padx=4)
     tk.Button(stock_frame, text="Update Stock", font=FONT_BTN,
-              bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
-              activebackground=BTN_HOVER,
-              command=lambda: update_stock(tree, simple_qty, user, refresh)).pack(side="left", padx=8)
-    
-    # --- Generate Sales Report Section ---
-    sales_frame = tk.Frame(inventory_win, bg=BG_COLOR)
+              bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER,
+              command=lambda: update_stock(inv_tree, qty_var, user, refresh_inventory)).pack(side="left", padx=8)
+
+    # Inventory Buttons
+    inv_btn_frame = tk.Frame(inventory_tab, bg=BG_COLOR)
+    inv_btn_frame.pack(pady=8)
+    tk.Button(inv_btn_frame, text="Add Product", bg="#4ee06e", fg=BTN_TEXT_COLOR,
+              font=FONT_BTN, activebackground="#3ac454",
+              command=lambda: add_product(inv_tree, refresh_inventory)).grid(row=0, column=0, padx=8)
+    tk.Button(inv_btn_frame, text="Edit Product", bg="#f7d23a", fg=BTN_TEXT_COLOR,
+              font=FONT_BTN, activebackground="#e6b92e",
+              command=lambda: edit_product(inv_tree, refresh_inventory)).grid(row=0, column=1, padx=8)
+    tk.Button(inv_btn_frame, text="Delete Product", bg="#f7d23a", fg="#23272f",
+              font=FONT_BTN, activebackground="#e84c4c",
+              command=lambda: delete_product(inv_tree, refresh_inventory)).grid(row=0, column=2, padx=8)
+
+    # Sales report section
+    sales_frame = tk.Frame(inventory_tab, bg=BG_COLOR)
     sales_frame.pack(pady=6)
-
-    tk.Label(sales_frame, text="Generate a sales report from (MM-DD-YYYY)", 
-            font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
-
-    mstart = tk.IntVar(value=1)
-    dstart = tk.IntVar(value=1)
-    ystart = tk.IntVar(value=2024)
-
-    mend = tk.IntVar(value=1)
-    dend = tk.IntVar(value=1)
-    yend = tk.IntVar(value=2024)
-
+    tk.Label(sales_frame, text="Sales report from (MM-DD-YYYY):",
+             font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
+    mstart = tk.IntVar(value=1); dstart = tk.IntVar(value=1); ystart = tk.IntVar(value=2024)
+    mend = tk.IntVar(value=1); dend = tk.IntVar(value=1); yend = tk.IntVar(value=2024)
     tk.Spinbox(sales_frame, from_=1, to=12, textvariable=mstart, width=4).pack(side="left", padx=2)
     tk.Spinbox(sales_frame, from_=1, to=31, textvariable=dstart, width=4).pack(side="left", padx=2)
     tk.Spinbox(sales_frame, from_=1900, to=3000, textvariable=ystart, width=6).pack(side="left", padx=2)
-
     tk.Label(sales_frame, text=" to ", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
-
     tk.Spinbox(sales_frame, from_=1, to=12, textvariable=mend, width=4).pack(side="left", padx=2)
     tk.Spinbox(sales_frame, from_=1, to=31, textvariable=dend, width=4).pack(side="left", padx=2)
     tk.Spinbox(sales_frame, from_=1900, to=3000, textvariable=yend, width=6).pack(side="left", padx=2)
+    tk.Button(sales_frame, text="Generate", font=FONT_BTN, bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
+              activebackground=BTN_HOVER,
+              command=lambda: generate_sales_report(
+                  datetime.date(ystart.get(), mstart.get(), dstart.get()),
+                  datetime.date(yend.get(), mend.get(), dend.get())
+              )).pack(side="left", padx=8)
 
-    tk.Button(
-        sales_frame,
-        text="Generate",
-        font=FONT_BTN,
-        bg=ACCENT_COLOR,
-        fg=BTN_TEXT_COLOR,
-        activebackground=BTN_HOVER,
-        command=lambda: generate_sales_report(
-            datetime.date(ystart.get(), mstart.get(), dstart.get()),
-            datetime.date(yend.get(), mend.get(), dend.get())
-        )
-    ).pack(side="left", padx=8)
+    # ===================== USER ROLES TAB =====================
+    roles_tab = tk.Frame(notebook, bg=BG_COLOR)
+    notebook.add(roles_tab, text="Manage User Roles")
 
-        
-    # Refresh button
-    tk.Button(inventory_win, text="Refresh", font=FONT_BTN,
-              bg="#e0e1ea", fg="#23272f",
-              activebackground="#cacbd1",
-              command=lambda: refresh(tree)).pack(pady=6)
-    # Back button at the top
-    tk.Button(inventory_win, text="Back to Admin Panel",
-            font=FONT_BTN, bg="#e84c4c", fg="white",
-            activebackground="#c9302c",
-            command=lambda: (inventory_win.destroy(), admin_window.deiconify())
-            ).pack(pady=5)
-    # Initial load
-    refresh(tree)
-
-
-def open_user_roles_window(admin_window, user):
-    admin_window.withdraw()
-    win = tk.Toplevel(admin_window)
-    win.title("Manage User Roles")
-    win.geometry("600x500")
-    win.configure(bg=BG_COLOR)
-    win.protocol("WM_DELETE_WINDOW", lambda: (win.destroy(), admin_window.deiconify()))
-
-    tk.Label(win, text="User Roles", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
-
-    
-    tree = ttk.Treeview(win, columns=("UserID", "Username", "Email", "Role"), show="headings", height=12)
+    tk.Label(roles_tab, text="User Roles", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+    user_tree = ttk.Treeview(roles_tab, columns=("UserID", "Username", "Email", "Role"), show="headings", height=12)
     for col in ("UserID", "Username", "Email", "Role"):
-        tree.heading(col, text=col)
-        tree.column(col, anchor="center", width=140)
-    tree.pack(pady=10)
+        user_tree.heading(col, text=col)
+        user_tree.column(col, anchor="center", width=140)
+    user_tree.pack(pady=8, fill="both", expand=True)
 
     def load_users():
-        for row in tree.get_children():
-            tree.delete(row)
+        user_tree.delete(*user_tree.get_children())
         try:
             conn = get_db()
             cur = conn.cursor()
             cur.execute("SELECT user_id, username, email, role FROM users")
             for row in cur.fetchall():
-                tree.insert('', 'end', values=row)
+                user_tree.insert('', 'end', values=row)
             conn.close()
         except Exception as e:
             messagebox.showerror("Error", f"Could not load users:\n{e}")
 
-    def prompt_role_change(current_role):
+    def change_role():
+        selected = user_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select", "Choose a user.")
+            return
+        uid, uname, email, current_role = user_tree.item(selected[0])['values']
+        # prompt for new role
         from tkinter import Toplevel, Label, Button, StringVar
         from tkinter.ttk import Combobox
-
-        role_window = Toplevel()
-        role_window.title("Select New Role")
-        role_window.geometry("300x150")
-        role_window.grab_set()  # Modal window
-
-        Label(role_window, text="Select New Role:").pack(pady=10)
+        role_win = Toplevel(admin)
+        role_win.title("Select New Role")
+        role_win.geometry("300x150")
+        role_win.grab_set()
+        Label(role_win, text="Select New Role:").pack(pady=10)
         role_var = StringVar(value=current_role)
-        roles = ["admin", "customer", "staff"]
-        role_combo = Combobox(role_window, textvariable=role_var, values=roles, state="readonly")
-        role_combo.pack(pady=5)
-
+        roles = ["admin", "staff", "customer"]
+        cb = Combobox(role_win, textvariable=role_var, values=roles, state="readonly")
+        cb.pack(pady=5)
         def submit():
-            role_window.destroy()
+            new_role = role_var.get()
+            if new_role and new_role != current_role:
+                try:
+                    conn = get_db()
+                    cur = conn.cursor()
+                    cur.callproc("sp_manage_user_roles", (uid, new_role))
+                    conn.commit()
+                    conn.close()
+                    messagebox.showinfo("Success", f"{uname}'s role changed to {new_role}")
+                    load_users()
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to update role:\n{e}")
+            role_win.destroy()
+        Button(role_win, text="OK", command=submit).pack(pady=10)
 
-        Button(role_window, text="OK", command=submit).pack(pady=10)
-        role_window.wait_window()
-        return role_var.get()
-
-    def change_role():
-        selected = tree.selection()
+    def delete_user():
+        selected = user_tree.selection()
         if not selected:
             messagebox.showwarning("Select", "Choose a user.")
             return
-        user_id, username, email, current_role = tree.item(selected[0])['values']
-        new_role = prompt_role_change(current_role)
-        if new_role and new_role != current_role:
+        uid = user_tree.item(selected[0])['values'][0]
+        if messagebox.askyesno("Confirm", "Delete and archive this user?"):
             try:
                 conn = get_db()
                 cur = conn.cursor()
-                cur.callproc("sp_manage_user_roles", (user_id, new_role))
+                cur.execute("DELETE FROM users WHERE user_id=%s", (uid,))
                 conn.commit()
                 conn.close()
-                messagebox.showinfo("Success", f"{username}'s role updated to '{new_role}'.")
+                messagebox.showinfo("Deleted", "User deleted and archived.")
                 load_users()
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to change role:\n{e}")
-    def delete_user():
-        selected = tree.selection()
-        if not selected:
-            messagebox.showwarning("Select", "Choose a user.")
-            return
-        user_id = tree.item(selected[0])['values']
-        if messagebox.askyesno("Are you sure?", "This user will be deleted and archived. This action cannot be undone. Proceed?"):
-            try:
-                conn = get_db()
-                cur = conn.cursor()
-                cur.execute("""DELETE FROM user where user_id = %s""", (user_id))
-                result = cur.fetchone()
-                conn.close()
-            except Exception as e:
-                messagebox.showerror("DB Error", f"Could not delete user:\n{e}")
-            return
+                messagebox.showerror("Error", f"Could not delete user:\n{e}")
 
-    tk.Button(win, text="Change Selected User's Role", font=FONT_BTN, bg=ACCENT_COLOR,
-              fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER, command=change_role).pack(pady=6)
-    
-    tk.Button(win, text="Delete User", font=FONT_BTN, bg="#ff9100",
-              fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER, command=delete_user).pack(pady=6)
+    role_btn_frame = tk.Frame(roles_tab, bg=BG_COLOR)
+    role_btn_frame.pack(pady=8)
+    tk.Button(role_btn_frame, text="Change Role", font=FONT_BTN, bg=ACCENT_COLOR,
+              fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER,
+              command=change_role).grid(row=0, column=0, padx=8)
+    tk.Button(role_btn_frame, text="Delete User", font=FONT_BTN, bg="#ff9100",
+              fg=BTN_TEXT_COLOR, activebackground="#e84c4c",
+              command=delete_user).grid(row=0, column=1, padx=8)
 
-    tk.Button(win, text="Back to Admin Panel",
-              font=FONT_BTN, bg="#e84c4c", fg="white",
-              activebackground="#c9302c",
-              command=lambda: (win.destroy(), admin_window.deiconify())
-              ).pack(pady=5)
+    # Initial loads
+    refresh_inventory()
     load_users()
 
-# ---------------- STAFF PANEL ----------------
+    # Logout Button
+    tk.Button(admin, text="Logout", font=FONT_BTN, bg="#e84c4c", fg="white",
+              activebackground="#c9302c",
+              command=lambda: (admin.destroy(), parent_window.deiconify() if parent_window else login_window())).pack(pady=10)
+
+
+
+    # ==================== staff panel ====================
 def staff_panel(user, parent_window=None):
     if parent_window:
-        parent_window.withdraw()  # hide login while staff panel is open
+        parent_window.withdraw()
 
     staff = tk.Toplevel()
     staff.title(f"Staff Panel - {user['username']}")
@@ -673,11 +551,10 @@ def staff_panel(user, parent_window=None):
 
     tk.Label(staff, text=f"Staff Panel - Welcome {user['username']}", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
 
-    # ---- Create Notebook (tabbed view) ----
     notebook = ttk.Notebook(staff)
     notebook.pack(fill="both", expand=True)
 
-        # ==================== INVENTORY TAB ====================
+    # ==================== INVENTORY TAB ====================
     inventory_tab = tk.Frame(notebook, bg=BG_COLOR)
     notebook.add(inventory_tab, text="Manage Inventory")
 
@@ -698,14 +575,11 @@ def staff_panel(user, parent_window=None):
             inv_tree.insert('', 'end', values=row)
         conn.close()
 
-
-    # ✅ Call it immediately so the inventory populates on window open
     refresh_inventory()
 
     tk.Button(inventory_tab, text="Refresh Inventory", font=FONT_BTN, bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
           activebackground=BTN_HOVER, command=refresh_inventory).pack(pady=5)
 
-    # ---- Update Stock Controls ----
     stock_frame = tk.Frame(inventory_tab, bg=BG_COLOR)
     stock_frame.pack(pady=6)
     tk.Label(stock_frame, text="Set New Stock:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
@@ -734,8 +608,7 @@ def staff_panel(user, parent_window=None):
               bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
               activebackground=BTN_HOVER,
               command=staff_update_stock).pack(side="left", padx=8)
-    
-        # Buttons frame
+
     btn_frame = tk.Frame(inventory_tab, bg=BG_COLOR)
     btn_frame.pack(pady=8)
     tk.Button(btn_frame, text="Add Product", bg="#4ee06e", fg=BTN_TEXT_COLOR,
@@ -748,17 +621,29 @@ def staff_panel(user, parent_window=None):
               font=FONT_BTN, activebackground="#e84c4c",
               command=lambda: delete_product(inv_tree, refresh_inventory)).grid(row=0, column=2, padx=8)
 
-
     # ==================== PENDING ORDERS TAB ====================
     orders_tab = tk.Frame(notebook, bg=BG_COLOR)
     notebook.add(orders_tab, text="Pending Orders")
 
     tk.Label(orders_tab, text="Pending Orders", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=8)
 
-    orders_tree = ttk.Treeview(orders_tab, columns=("OrderID","UserID","Date","Total","Status"), show="headings", height=15)
-    for col in ("OrderID","UserID","Date","Total","Status"):
-        orders_tree.heading(col, text=col)
-        orders_tree.column(col, anchor="center", width=150)
+    # Updated columns: include Products after OrderID
+    orders_tree = ttk.Treeview(orders_tab,
+                               columns=("OrderID","Products","UserID","Date","Total","Status"),
+                               show="headings", height=15)
+    orders_tree.heading("OrderID", text="Order ID")
+    orders_tree.heading("Products", text="Products")
+    orders_tree.heading("UserID", text="User ID")
+    orders_tree.heading("Date", text="Date")
+    orders_tree.heading("Total", text="Total")
+    orders_tree.heading("Status", text="Status")
+
+    orders_tree.column("OrderID", width=80, anchor="center")
+    orders_tree.column("Products", width=300, anchor="w")
+    orders_tree.column("UserID", width=80, anchor="center")
+    orders_tree.column("Date", width=150, anchor="center")
+    orders_tree.column("Total", width=100, anchor="center")
+    orders_tree.column("Status", width=100, anchor="center")
     orders_tree.pack(pady=10, fill="both", expand=True)
 
     def load_pending_orders():
@@ -766,7 +651,20 @@ def staff_panel(user, parent_window=None):
         try:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("SELECT order_id,user_id,order_date,total_php,status FROM orders WHERE status='pending'")
+            cur.execute("""
+                SELECT o.order_id,
+                       GROUP_CONCAT(p.name SEPARATOR ', ') AS products,
+                       o.user_id,
+                       o.order_date,
+                       o.total_php,
+                       o.status
+                FROM orders o
+                JOIN order_items oi ON o.order_id = oi.order_id
+                JOIN products p ON oi.product_id = p.product_id
+                WHERE o.status='pending'
+                GROUP BY o.order_id, o.user_id, o.order_date, o.total_php, o.status
+                ORDER BY o.order_date DESC
+            """)
             for row in cur.fetchall():
                 orders_tree.insert('', 'end', values=row)
             conn.close()
@@ -784,59 +682,18 @@ def staff_panel(user, parent_window=None):
             try:
                 conn = get_db()
                 cur = conn.cursor()
-
-                # 1. Get all order_item_ids for this order
                 cur.execute("SELECT order_item_id FROM order_items WHERE order_id = %s", (order_id,))
                 item_ids = cur.fetchall()
-
-                # 2. For each item, insert into key_deliveries (this triggers your SQL trigger)
                 for (item_id,) in item_ids:
-                    # generate a dummy key or real key
                     generated_key = f"KEY-{item_id}-{datetime.datetime.now().strftime('%H%M%S')}"
                     cur.execute("INSERT INTO key_deliveries (order_item_id, game_key) VALUES (%s, %s)",
                                 (item_id, generated_key))
-
                 conn.commit()
                 conn.close()
-
                 messagebox.showinfo("Delivered", f"Order #{order_id} marked as delivered. Keys recorded.")
-                load_pending_orders()  # refresh the list
+                load_pending_orders()
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to deliver order:\n{e}")
-
-    # ==================== DELIVERED ORDERS TAB ====================
-    delivered_tab = tk.Frame(notebook, bg=BG_COLOR)
-    notebook.add(delivered_tab, text="Delivered Orders")
-
-    tk.Label(delivered_tab, text="Delivered Orders", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=8)
-
-    delivered_tree = ttk.Treeview(delivered_tab,
-                                  columns=("OrderID", "UserID", "Date", "Total", "Status"),
-                                  show="headings", height=15)
-    for col in ("OrderID", "UserID", "Date", "Total", "Status"):
-        delivered_tree.heading(col, text=col)
-        delivered_tree.column(col, anchor="center", width=150)
-    delivered_tree.pack(pady=10, fill="both", expand=True)
-
-    def load_delivered_orders():
-        delivered_tree.delete(*delivered_tree.get_children())
-        try:
-            conn = get_db()
-            cur = conn.cursor()
-            # fetch completed/delivered orders
-            cur.execute("SELECT order_id,user_id,order_date,total_php,status FROM orders WHERE status='completed'")
-            for row in cur.fetchall():
-                delivered_tree.insert('', 'end', values=row)
-            conn.close()
-        except Exception as e:
-            messagebox.showerror("Error", f"Could not load delivered orders:\n{e}")
-
-    # refresh button
-    tk.Button(delivered_tab, text="Refresh", font=FONT_BTN, bg="#e0e1ea", fg="#23272f",
-              activebackground="#cacbd1", command=load_delivered_orders).pack(pady=10)
-
-    # Initial load for delivered tab
-    load_delivered_orders()
 
     btn_frame = tk.Frame(orders_tab, bg=BG_COLOR)
     btn_frame.pack(pady=10)
@@ -845,14 +702,61 @@ def staff_panel(user, parent_window=None):
     tk.Button(btn_frame, text="Refresh", font=FONT_BTN, bg="#e0e1ea", fg="#23272f",
               activebackground="#cacbd1", command=load_pending_orders).pack(side="left", padx=8)
 
+    # ==================== DELIVERED ORDERS TAB ====================
+    delivered_tab = tk.Frame(notebook, bg=BG_COLOR)
+    notebook.add(delivered_tab, text="Delivered Orders")
+
+    tk.Label(delivered_tab, text="Delivered Orders", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=8)
+
+    delivered_tree = ttk.Treeview(delivered_tab,
+                                  columns=("OrderID","Products","UserID","Date","Total","Status"),
+                                  show="headings", height=15)
+    for col in ("OrderID","Products","UserID","Date","Total","Status"):
+        delivered_tree.heading(col, text=col)
+    delivered_tree.column("OrderID", width=80, anchor="center")
+    delivered_tree.column("Products", width=300, anchor="w")
+    delivered_tree.column("UserID", width=80, anchor="center")
+    delivered_tree.column("Date", width=150, anchor="center")
+    delivered_tree.column("Total", width=100, anchor="center")
+    delivered_tree.column("Status", width=100, anchor="center")
+    delivered_tree.pack(pady=10, fill="both", expand=True)
+
+    def load_delivered_orders():
+        delivered_tree.delete(*delivered_tree.get_children())
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT o.order_id,
+                       GROUP_CONCAT(p.name SEPARATOR ', ') AS products,
+                       o.user_id,
+                       o.order_date,
+                       o.total_php,
+                       o.status
+                FROM orders o
+                JOIN order_items oi ON o.order_id = oi.order_id
+                JOIN products p ON oi.product_id = p.product_id
+                WHERE o.status='completed'
+                GROUP BY o.order_id, o.user_id, o.order_date, o.total_php, o.status
+                ORDER BY o.order_date DESC
+            """)
+            for row in cur.fetchall():
+                delivered_tree.insert('', 'end', values=row)
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load delivered orders:\n{e}")
+
+    tk.Button(delivered_tab, text="Refresh", font=FONT_BTN, bg="#e0e1ea", fg="#23272f",
+              activebackground="#cacbd1", command=load_delivered_orders).pack(pady=10)
+
+    # Initial loads
+    load_pending_orders()
+    load_delivered_orders()
+
     # Back button
     tk.Button(staff, text="Logout", font=FONT_BTN, bg="#e84c4c", fg="white",
               activebackground="#c9302c",
               command=lambda: (staff.destroy(), parent_window.deiconify() if parent_window else login_window())).pack(pady=10)
-
-    # Load pending orders on start
-    load_pending_orders()
-
 
 
 # ---------------- Admin Helper Functions ----------------
@@ -1022,13 +926,14 @@ def generate_sales_report(startdate, enddate):
 
         # Fetch rows from sales_reports for this date range
         cur.execute("""
-            SELECT order_id, username, order_date, total_php, status, generated_at
-            FROM sales_reports
-            WHERE start_date=%s AND end_date=%s
-            ORDER BY generated_at DESC
+            SELECT o.order_id, u.username, o.order_date, o.total_php, o.status
+            FROM orders o
+            JOIN users u ON o.user_id = u.user_id
+            WHERE o.order_date BETWEEN %s AND %s
+            ORDER BY o.order_date DESC
         """, (startdate, enddate))
         rows = cur.fetchall()
-        conn.close()
+
 
         #  Create a new popup window
         report_win = tk.Toplevel()
