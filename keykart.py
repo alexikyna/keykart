@@ -25,7 +25,7 @@ def get_db():
     return mysql.connector.connect(
         host="localhost",
         user="root",
-        password="root",
+        password="DLSU1234!",
         database="keykart"
     )
 
@@ -539,36 +539,45 @@ def open_inventory_view(admin_window, user):
               activebackground=BTN_HOVER,
               command=lambda: update_stock(tree, simple_qty, user, refresh)).pack(side="left", padx=8)
     
-    #Generate sales report
-    stock_frame2 = tk.Frame(inventory_win, bg=BG_COLOR)
-    stock_frame2.pack(pady=6)
-    tk.Label(stock_frame, text="Generate a sales report from (MM-DD-YYYY) ", font=FONT_LABEL,
-             fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
+    # --- Generate Sales Report Section ---
+    sales_frame = tk.Frame(inventory_win, bg=BG_COLOR)
+    sales_frame.pack(pady=6)
+
+    tk.Label(sales_frame, text="Generate a sales report from (MM-DD-YYYY)", 
+            font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
+
     mstart = tk.IntVar(value=1)
     dstart = tk.IntVar(value=1)
-    ystart = tk.IntVar(value=1900)
+    ystart = tk.IntVar(value=2024)
+
     mend = tk.IntVar(value=1)
     dend = tk.IntVar(value=1)
-    yend = tk.IntVar(value=1900)
-    tk.Spinbox(stock_frame, from_=1, to=12, textvariable=mstart,
-               width=6).pack(side="left", padx=4)
-    tk.Spinbox(stock_frame, from_=1, to=31, textvariable=dstart,
-               width=6).pack(side="left", padx=4)
-    tk.Spinbox(stock_frame, from_=1900, to=3000, textvariable=ystart,
-               width=6).pack(side="left", padx=4)
-    tk.Label(stock_frame, text=" to ", font=FONT_LABEL,
-             fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
-    tk.Spinbox(stock_frame, from_=1, to=12, textvariable=mend,
-               width=6).pack(side="left", padx=4)
-    tk.Spinbox(stock_frame, from_=1, to=31, textvariable=dend,
-               width=6).pack(side="left", padx=4)
-    tk.Spinbox(stock_frame, from_=1900, to=3000, textvariable=yend,
-               width=6).pack(side="left", padx=4)
-    tk.Button(stock_frame, text="Generate", font=FONT_BTN,
-              bg=ACCENT_COLOR, fg="#00aaff",
-              activebackground=BTN_HOVER,
-              command=lambda: generate_sales_report(datetime.date(ystart, mstart, dstart), datetime.date(yend, mend, dend))).pack(side="left", padx=8)
-    
+    yend = tk.IntVar(value=2024)
+
+    tk.Spinbox(sales_frame, from_=1, to=12, textvariable=mstart, width=4).pack(side="left", padx=2)
+    tk.Spinbox(sales_frame, from_=1, to=31, textvariable=dstart, width=4).pack(side="left", padx=2)
+    tk.Spinbox(sales_frame, from_=1900, to=3000, textvariable=ystart, width=6).pack(side="left", padx=2)
+
+    tk.Label(sales_frame, text=" to ", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
+
+    tk.Spinbox(sales_frame, from_=1, to=12, textvariable=mend, width=4).pack(side="left", padx=2)
+    tk.Spinbox(sales_frame, from_=1, to=31, textvariable=dend, width=4).pack(side="left", padx=2)
+    tk.Spinbox(sales_frame, from_=1900, to=3000, textvariable=yend, width=6).pack(side="left", padx=2)
+
+    tk.Button(
+        sales_frame,
+        text="Generate",
+        font=FONT_BTN,
+        bg=ACCENT_COLOR,
+        fg=BTN_TEXT_COLOR,
+        activebackground=BTN_HOVER,
+        command=lambda: generate_sales_report(
+            datetime.date(ystart.get(), mstart.get(), dstart.get()),
+            datetime.date(yend.get(), mend.get(), dend.get())
+        )
+    ).pack(side="left", padx=8)
+
+        
     # Refresh button
     tk.Button(inventory_win, text="Refresh", font=FONT_BTN,
               bg="#e0e1ea", fg="#23272f",
@@ -674,12 +683,12 @@ def open_user_roles_window(admin_window, user):
     tk.Button(win, text="Change Selected User's Role", font=FONT_BTN, bg=ACCENT_COLOR,
               fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER, command=change_role).pack(pady=6)
     
-    tk.Button(win, text="Delete User", font=FONT_BTN, bg="#ff0000",
+    tk.Button(win, text="Delete User", font=FONT_BTN, bg="#ff9100",
               fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER, command=delete_user).pack(pady=6)
 
     tk.Button(win, text="Back to Admin Panel",
-              font=FONT_BTN, bg="#ffffff", fg="black",
-              activebackground="#aaaaaa",
+              font=FONT_BTN, bg="#e84c4c", fg="white",
+              activebackground="#c9302c",
               command=lambda: (win.destroy(), admin_window.deiconify())
               ).pack(pady=5)
     load_users()
@@ -979,12 +988,48 @@ def generate_sales_report(startdate, enddate):
     try:
         conn = get_db()
         cur = conn.cursor()
+        # Call the procedure (inserts into sales_reports)
         cur.callproc('sp_generate_sales_report', (startdate, enddate))
         conn.commit()
+
+        # Fetch rows from sales_reports for this date range
+        cur.execute("""
+            SELECT order_id, username, order_date, total_php, status, generated_at
+            FROM sales_reports
+            WHERE start_date=%s AND end_date=%s
+            ORDER BY generated_at DESC
+        """, (startdate, enddate))
+        rows = cur.fetchall()
         conn.close()
-        messagebox.showinfo("Notice", "Sales report generated.")
+
+        #  Create a new popup window
+        report_win = tk.Toplevel()
+        report_win.title("Sales Report")
+        report_win.geometry("800x400")
+        report_win.configure(bg=BG_COLOR)
+
+        tk.Label(report_win, text=f"Sales Report ({startdate} to {enddate})",
+                 font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+
+        #  Create a Treeview to display rows
+        tree = ttk.Treeview(
+            report_win,
+            columns=("OrderID", "Username", "Date", "Total", "Status", "Generated"),
+            show="headings",
+            height=15
+        )
+
+        for col in ("OrderID", "Username", "Date", "Total", "Status", "Generated"):
+            tree.heading(col, text=col)
+            tree.column(col, anchor="center", width=120)
+        tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+        #  Insert rows into the Treeview
+        for row in rows:
+            tree.insert("", "end", values=row)
+
     except Exception as e:
-        messagebox.showerror("Error", f"Sales report failed to generate:\n{e}")
+        messagebox.showerror("Error", f"Sales report failed:\n{e}")
 
 # ---- RUN LOGIN ----
 if __name__ == "__main__":
