@@ -256,3 +256,5 @@ INSERT INTO products (name, category, price_php, price_usd, price_krw, stock, de
 VALUES
 ('Genshin Genesis Crystals', 'in_game_currency', 500, 9, 12000, 50, 'In-game top-up for Genshin Impact'),
 ('Kirby Plush', 'merch', 1200, 22, 29000, 5, 'Soft Kirby Plush Toy');
+
+ALTER TABLE users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1;

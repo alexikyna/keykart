@@ -88,11 +88,96 @@ def login_window():
                           width=24, bd=0, relief="ridge", activebackground=BTN_HOVER, command=do_login)
     login_btn.pack(pady=(10, 20))
 
+    tk.Button(root, text="Create New Account", font=FONT_BTN, bg="#3da6f0", fg="white",
+          activebackground="#2b8ad4",
+          width=24, bd=0, relief="ridge",
+          command=lambda: registration_window(root)).pack(pady=(0, 10))
+
+
     # Hint
     tk.Label(root, text="Demo accounts:\nadmin/admin123 | staff1/staffpass | gamer1/gamerpass",
              font=("Segoe UI", 9), fg="#8d9bac", bg=BG_COLOR).pack(side="bottom", pady=10)
 
     root.mainloop()
+
+# ---------------- REGISTER WINDOW ----------------
+def registration_window(parent_window=None):
+    if parent_window:
+        parent_window.withdraw()
+
+    reg = tk.Toplevel()
+    reg.title("KeyKart | Register")
+    reg.geometry("400x480")
+    reg.configure(bg=BG_COLOR)
+    reg.resizable(False, False)
+    reg.protocol("WM_DELETE_WINDOW", lambda: (reg.destroy(), parent_window.deiconify() if parent_window else None))
+
+    tk.Label(reg, text="📝 Create Account", font=FONT_TITLE, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=(30, 10))
+
+    form_frame = tk.Frame(reg, bg=BG_COLOR)
+    form_frame.pack(pady=10)
+
+    # Username
+    tk.Label(form_frame, text="Username", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).grid(row=0, column=0, sticky="w", pady=(0, 2))
+    entry_user = tk.Entry(form_frame, font=("Segoe UI", 12), width=28, bg="#323946", fg="white", insertbackground="white", relief="flat")
+    entry_user.grid(row=1, column=0, pady=(0, 12))
+
+    # Email
+    tk.Label(form_frame, text="Email", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).grid(row=2, column=0, sticky="w", pady=(0, 2))
+    entry_email = tk.Entry(form_frame, font=("Segoe UI", 12), width=28, bg="#323946", fg="white", insertbackground="white", relief="flat")
+    entry_email.grid(row=3, column=0, pady=(0, 12))
+
+    # Password
+    tk.Label(form_frame, text="Password", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).grid(row=4, column=0, sticky="w", pady=(0, 2))
+    entry_pass = tk.Entry(form_frame, font=("Segoe UI", 12), width=28, show="•", bg="#323946", fg="white", insertbackground="white", relief="flat")
+    entry_pass.grid(row=5, column=0, pady=(0, 12))
+
+    # Confirm Password
+    tk.Label(form_frame, text="Confirm Password", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).grid(row=6, column=0, sticky="w", pady=(0, 2))
+    entry_pass2 = tk.Entry(form_frame, font=("Segoe UI", 12), width=28, show="•", bg="#323946", fg="white", insertbackground="white", relief="flat")
+    entry_pass2.grid(row=7, column=0, pady=(0, 12))
+
+    def register_user():
+        uname = entry_user.get().strip()
+        email = entry_email.get().strip()
+        pw1 = entry_pass.get().strip()
+        pw2 = entry_pass2.get().strip()
+
+        if not uname or not email or not pw1 or not pw2:
+            messagebox.showwarning("Input Required", "All fields are required.")
+            return
+        if pw1 != pw2:
+            messagebox.showerror("Password Mismatch", "Passwords do not match.")
+            return
+
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            # check duplicates
+            cur.execute("SELECT COUNT(*) FROM users WHERE username=%s OR email=%s", (uname, email))
+            if cur.fetchone()[0] > 0:
+                messagebox.showerror("Duplicate", "Username or email already exists.")
+                conn.close()
+                return
+            # insert new user
+            cur.execute("INSERT INTO users (username, password, email, role) VALUES (%s, %s, %s, 'customer')",
+                        (uname, pw1, email))
+            conn.commit()
+            conn.close()
+            messagebox.showinfo("Success", "Account created! You can now log in.")
+            reg.destroy()
+            if parent_window:
+                parent_window.deiconify()
+        except Exception as e:
+            messagebox.showerror("Database Error", f"Could not register user:\n{e}")
+
+    tk.Button(reg, text="Register", font=FONT_BTN, bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
+              width=24, bd=0, relief="ridge", activebackground=BTN_HOVER,
+              command=register_user).pack(pady=(10, 20))
+
+    tk.Button(reg, text="Back to Login", font=FONT_BTN, bg="#e84c4c", fg="white",
+              activebackground="#c9302c",
+              command=lambda: (reg.destroy(), parent_window.deiconify() if parent_window else login_window())).pack(pady=5)
 
 # ---------------- SHOP WINDOW (Customer) ----------------
 def shop_window(user, parent_window=None):
@@ -334,9 +419,8 @@ def shop_window(user, parent_window=None):
     shop.mainloop()
 
 
+# ===================== ADMIN PANEL =====================
 
-
-# ---------------- ADMIN PANEL ----------------
 def admin_panel(user, parent_window):
     if parent_window:
         parent_window.withdraw()
@@ -459,7 +543,7 @@ def admin_panel(user, parent_window):
         try:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("SELECT user_id, username, email, role FROM users")
+            cur.execute("SELECT user_id, username, email, role FROM users WHERE is_active=1")
             for row in cur.fetchall():
                 user_tree.insert('', 'end', values=row)
             conn.close()
@@ -472,7 +556,6 @@ def admin_panel(user, parent_window):
             messagebox.showwarning("Select", "Choose a user.")
             return
         uid, uname, email, current_role = user_tree.item(selected[0])['values']
-        # prompt for new role
         from tkinter import Toplevel, Label, Button, StringVar
         from tkinter.ttk import Combobox
         role_win = Toplevel(admin)
@@ -506,17 +589,25 @@ def admin_panel(user, parent_window):
             messagebox.showwarning("Select", "Choose a user.")
             return
         uid = user_tree.item(selected[0])['values'][0]
-        if messagebox.askyesno("Confirm", "Delete and archive this user?"):
+
+        if messagebox.askyesno("Confirm", "Deactivate (soft delete) this user?"):
             try:
                 conn = get_db()
                 cur = conn.cursor()
-                cur.execute("DELETE FROM users WHERE user_id=%s", (uid,))
+                # archive details first
+                cur.execute("""
+                    INSERT INTO user_archive (user_id, username, email, role)
+                    SELECT user_id, username, email, role FROM users WHERE user_id=%s
+                """, (uid,))
+                # mark as inactive
+                cur.execute("UPDATE users SET is_active=0 WHERE user_id=%s", (uid,))
                 conn.commit()
                 conn.close()
-                messagebox.showinfo("Deleted", "User deleted and archived.")
+                messagebox.showinfo("Deactivated", "User deactivated (soft deleted) and archived.")
                 load_users()
+                load_archived_users()
             except Exception as e:
-                messagebox.showerror("Error", f"Could not delete user:\n{e}")
+                messagebox.showerror("Error", f"Could not deactivate user:\n{e}")
 
     role_btn_frame = tk.Frame(roles_tab, bg=BG_COLOR)
     role_btn_frame.pack(pady=8)
@@ -527,15 +618,38 @@ def admin_panel(user, parent_window):
               fg=BTN_TEXT_COLOR, activebackground="#e84c4c",
               command=delete_user).grid(row=0, column=1, padx=8)
 
+    # ===================== ARCHIVED USERS TAB =====================
+    archived_tab = tk.Frame(notebook, bg=BG_COLOR)
+    notebook.add(archived_tab, text="Archived Users")
+
+    tk.Label(archived_tab, text="Archived Users", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+    archived_tree = ttk.Treeview(archived_tab, columns=("UserID", "Username", "Email", "Role", "ArchivedAt"), show="headings", height=12)
+    for col in ("UserID", "Username", "Email", "Role", "ArchivedAt"):
+        archived_tree.heading(col, text=col)
+        archived_tree.column(col, anchor="center", width=140)
+    archived_tree.pack(pady=8, fill="both", expand=True)
+
+    def load_archived_users():
+        archived_tree.delete(*archived_tree.get_children())
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT user_id, username, email, role, archived_at FROM user_archive ORDER BY archived_at DESC")
+            for row in cur.fetchall():
+                archived_tree.insert('', 'end', values=row)
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load archived users:\n{e}")
+
     # Initial loads
     refresh_inventory()
     load_users()
+    load_archived_users()
 
     # Logout Button
     tk.Button(admin, text="Logout", font=FONT_BTN, bg="#e84c4c", fg="white",
               activebackground="#c9302c",
               command=lambda: (admin.destroy(), parent_window.deiconify() if parent_window else login_window())).pack(pady=10)
-
 
 
     # ==================== staff panel ====================
