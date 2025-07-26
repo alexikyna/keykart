@@ -30,7 +30,7 @@ def get_db():
     return mysql.connector.connect(
         host="localhost",
         user="root",
-        password="p@ssword",
+        password="Password123",
         database="keykart"
     )
 
@@ -582,10 +582,6 @@ def shop_window(user, parent_window=None):
         conn.close()
         rate = float(row['exchange_rate_to_php']) if row else 1.0
 
-        # insert converted totals
-        for order_id, products, order_date, total_php, status in rows:
-            converted_total = float(total_php) * rate
-            orders_tree.insert('', 'end', values=(order_id, products, order_date, f"{converted_total:.2f}", status))
 
     def update_cart_prices():
         if not cart:
