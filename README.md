@@ -4,6 +4,8 @@ KeyKart Project Setup Instructions
 
 2. Install the required Python dependency:
    pip install mysql-connector-python
+   pip install pillow
+
 
 3. Download and install MySQL if you haven’t yet. (You can use MySQL Workbench for a GUI, or use the command line.)
 
