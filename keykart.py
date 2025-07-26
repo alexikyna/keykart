@@ -9,6 +9,9 @@ import shutil
 import datetime
 import tempfile
 import webbrowser
+from PIL import Image, ImageTk
+import urllib.request, io
+import os
 
 
 # --- Global Styles ---
@@ -27,7 +30,7 @@ def get_db():
     return mysql.connector.connect(
         host="localhost",
         user="root",
-        password="p@ssword",
+        password="DLSU1234!",
         database="keykart"
     )
 
@@ -221,6 +224,67 @@ def shop_window(user, parent_window=None):
         tree.heading(col, text=col)
         tree.column(col, anchor="center", width=150)
     tree.pack(pady=10, fill="both", expand=True)
+
+        # --- Popup for product details in shop window ---
+    def show_product_popup_customer(event):
+        selected = tree.selection()
+        if not selected:
+            return
+        pid = tree.item(selected[0])['values'][0]
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""SELECT name, category, description,
+                                  price_php, price_usd, price_krw, stock, image_url
+                           FROM products WHERE product_id=%s""", (pid,))
+            result = cur.fetchone()
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("DB Error", f"Failed to fetch product:\n{e}")
+            return
+
+        if not result:
+            return
+
+        name, category, desc, php, usd, krw, stock, image_url = result
+        popup = tk.Toplevel(shop)
+        popup.title(name)
+        popup.geometry("400x500")
+        popup.configure(bg=BG_COLOR)
+
+        tk.Label(popup, text=name, font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+        tk.Label(popup, text=f"Category: {category}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Description: {desc}", font=FONT_LABEL, fg=FG_TEXT,
+                 bg=BG_COLOR, wraplength=380, justify="left").pack(pady=2)
+        tk.Label(popup, text=f"Price (PHP): {php}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Price (USD): {usd}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Price (KRW): {krw}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Stock: {stock}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+
+        img_label = tk.Label(popup, bg=BG_COLOR)
+        img_label.pack(pady=10)
+
+        try:
+            if image_url:
+                if image_url.startswith("http://") or image_url.startswith("https://"):
+                    with urllib.request.urlopen(image_url) as u:
+                        raw = u.read()
+                    im = Image.open(io.BytesIO(raw))
+                else:
+                    if not os.path.isabs(image_url):
+                        image_url = os.path.join(os.getcwd(), image_url)
+                    im = Image.open(image_url)
+                im = im.resize((150, 150))
+                photo = ImageTk.PhotoImage(im)
+                img_label.config(image=photo)
+                img_label.image = photo
+            else:
+                img_label.config(text="No image available", fg="white")
+        except Exception as e:
+            img_label.config(text="Error loading image", fg="red")
+
+    tree.bind("<Double-1>", show_product_popup_customer)
+
 
     qty_frame = tk.Frame(catalog_tab, bg=BG_COLOR)
     qty_frame.pack(pady=6)
@@ -505,6 +569,68 @@ def admin_panel(user, parent_window):
         inv_tree.heading(col, text=col)
         inv_tree.column(col, anchor="center", width=120)
     inv_tree.pack(pady=8, fill="both", expand=True)
+
+        # --- Popup for product details ---
+    def show_product_popup(event):
+        selected = inv_tree.selection()
+        if not selected:
+            return
+        pid = inv_tree.item(selected[0])['values'][0]
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""SELECT name, category, description,
+                                  price_php, price_usd, price_krw, stock, image_url
+                           FROM products WHERE product_id=%s""", (pid,))
+            result = cur.fetchone()
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("DB Error", f"Failed to fetch product:\n{e}")
+            return
+
+        if not result:
+            return
+
+        name, category, desc, php, usd, krw, stock, image_url = result
+        popup = tk.Toplevel(inventory_tab)
+        popup.title(name)
+        popup.geometry("400x500")
+        popup.configure(bg=BG_COLOR)
+
+        tk.Label(popup, text=name, font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+        tk.Label(popup, text=f"Category: {category}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Description: {desc}", font=FONT_LABEL, fg=FG_TEXT,
+                 bg=BG_COLOR, wraplength=380, justify="left").pack(pady=2)
+        tk.Label(popup, text=f"Price (PHP): {php}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Price (USD): {usd}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Price (KRW): {krw}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Stock: {stock}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+
+        img_label = tk.Label(popup, bg=BG_COLOR)
+        img_label.pack(pady=10)
+
+        try:
+            if image_url:
+                if image_url.startswith("http://") or image_url.startswith("https://"):
+                    with urllib.request.urlopen(image_url) as u:
+                        raw = u.read()
+                    im = Image.open(io.BytesIO(raw))
+                else:
+                    if not os.path.isabs(image_url):
+                        image_url = os.path.join(os.getcwd(), image_url)
+                    im = Image.open(image_url)
+                im = im.resize((150, 150))
+                photo = ImageTk.PhotoImage(im)
+                img_label.config(image=photo)
+                img_label.image = photo
+            else:
+                img_label.config(text="No image available", fg="white")
+        except Exception as e:
+            img_label.config(text="Error loading image", fg="red")
+
+    # Bind double-click event to popup
+    inv_tree.bind("<Double-1>", show_product_popup)
+
 
     currency_var = tk.StringVar(value="price_php")
     currency_frame = tk.Frame(inventory_tab, bg=BG_COLOR)
@@ -898,6 +1024,68 @@ def staff_panel(user, parent_window=None):
         inv_tree.column(col, anchor="center", width=120)
     inv_tree.pack(pady=10)
 
+
+        # --- Popup for product details in staff panel ---
+    def show_product_popup_staff(event):
+        selected = inv_tree.selection()
+        if not selected:
+            return
+        pid = inv_tree.item(selected[0])['values'][0]
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""SELECT name, category, description,
+                                  price_php, price_usd, price_krw, stock, image_url
+                           FROM products WHERE product_id=%s""", (pid,))
+            result = cur.fetchone()
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("DB Error", f"Failed to fetch product:\n{e}")
+            return
+
+        if not result:
+            return
+
+        name, category, desc, php, usd, krw, stock, image_url = result
+        popup = tk.Toplevel(staff)
+        popup.title(name)
+        popup.geometry("400x500")
+        popup.configure(bg=BG_COLOR)
+
+        tk.Label(popup, text=name, font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+        tk.Label(popup, text=f"Category: {category}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Description: {desc}", font=FONT_LABEL, fg=FG_TEXT,
+                 bg=BG_COLOR, wraplength=380, justify="left").pack(pady=2)
+        tk.Label(popup, text=f"Price (PHP): {php}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Price (USD): {usd}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Price (KRW): {krw}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Stock: {stock}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+
+        img_label = tk.Label(popup, bg=BG_COLOR)
+        img_label.pack(pady=10)
+
+        try:
+            if image_url:
+                if image_url.startswith("http://") or image_url.startswith("https://"):
+                    with urllib.request.urlopen(image_url) as u:
+                        raw = u.read()
+                    im = Image.open(io.BytesIO(raw))
+                else:
+                    if not os.path.isabs(image_url):
+                        image_url = os.path.join(os.getcwd(), image_url)
+                    im = Image.open(image_url)
+                im = im.resize((150, 150))
+                photo = ImageTk.PhotoImage(im)
+                img_label.config(image=photo)
+                img_label.image = photo
+            else:
+                img_label.config(text="No image available", fg="white")
+        except Exception as e:
+            img_label.config(text="Error loading image", fg="red")
+
+    inv_tree.bind("<Double-1>", show_product_popup_staff)
+
+
     currency_var = tk.StringVar(value="price_php")
 
     def refresh_inventory(_=None):
@@ -1196,31 +1384,30 @@ def add_product(tree, refresh):
         try:
             conn = get_db()
             cur = conn.cursor(dictionary=True)
-            # Fetch currency rates
             cur.execute("SELECT currency_code, exchange_rate_to_usd FROM currencies")
             rates = cur.fetchall()
             conn.close()
 
-            # Default fallback values
-            usd_rate = 58.0
-            krw_rate = 23.6
+            php_to_usd = 0.0172   # fallback
+            usd_to_krw = None     # we will calculate later
 
-            # Parse rates from table
+            # Find PHP and KRW rates
             for r in rates:
-                if r['currency_code'] == 'USD':
-                    usd_rate = float(r['exchange_rate_to_usd'])
+                if r['currency_code'] == 'PHP':
+                    php_to_usd = float(r['exchange_rate_to_usd'])
                 elif r['currency_code'] == 'KRW':
-                    # 1 PHP to KRW = (1 / USD rate) * (KRW/USD)
-                    # OR you can store a direct PHP->KRW in the table if you prefer
-                    # For now assume exchange_rate_to_usd is also valid for KRW
-                    # (Adjust logic if your table stores differently)
-                    krw_rate = 23.6
-        except Exception as e:
-            messagebox.showwarning("Currency Warning", f"Could not load currency rates. Using default.\n{e}")
+                    krw_to_usd = float(r['exchange_rate_to_usd'])
 
-        # Auto‑convert to USD and KRW
-        usd_price = round(php_price / usd_rate, 2)
-        krw_price = round(php_price * krw_rate, 0)
+            # Convert
+            usd_price = round(php_price * php_to_usd, 2)
+            krw_price = round((php_price * php_to_usd) / krw_to_usd, 0)
+
+        except Exception as e:
+            messagebox.showwarning("Currency Warning", f"Could not load currency rates. Using fallback.\n{e}")
+            # Fallback conversions if query fails
+            usd_price = round(php_price / 58.0, 2)
+            krw_price = round(php_price * 23.6, 0)
+
 
         try:
             conn = get_db()
@@ -1240,7 +1427,7 @@ def add_product(tree, refresh):
             conn.close()
             messagebox.showinfo("Saved", "Product added successfully!")
             win.destroy()
-            refresh(tree)
+            refresh()
         except Exception as e:
             messagebox.showerror("Error", f"Could not add product:\n{e}")
 
@@ -1290,7 +1477,7 @@ def delete_product(tree, refresh):
             conn.commit()
             conn.close()
             messagebox.showinfo("Archived", "Product archived successfully!")
-            refresh(tree)
+            refresh()
         except Exception as e:
             messagebox.showerror("Error", f"Could not archive product:\n{e}")
 
