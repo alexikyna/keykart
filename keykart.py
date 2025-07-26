@@ -189,6 +189,7 @@ def registration_window(parent_window=None):
     tk.Button(reg, text="Back to Login", font=FONT_BTN, bg="#e84c4c", fg="white",
               activebackground="#c9302c",
               command=lambda: (reg.destroy(), parent_window.deiconify() if parent_window else login_window())).pack(pady=5)
+
 # ---------------- SHOP WINDOW (Customer) ----------------
 def shop_window(user, parent_window=None):
     if parent_window:
@@ -199,6 +200,10 @@ def shop_window(user, parent_window=None):
     shop.geometry("1100x750")
     shop.configure(bg=BG_COLOR)
     shop.protocol("WM_DELETE_WINDOW", lambda: (parent_window.destroy()))
+
+    style = ttk.Style()
+    style.theme_use('default')
+    style.configure("TNotebook.Tab", padding=[20, 8])
 
     tk.Label(shop, text=f"Welcome, {user['username']}!", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=5)
 
@@ -470,29 +475,50 @@ def shop_window(user, parent_window=None):
         orders_tree.delete(*orders_tree.get_children())
         conn = get_db()
         cur = conn.cursor()
-        if currency_var.get() == "price_php":
-            total_col = "total_php"
-        elif currency_var.get() == "price_usd":
-            total_col = "total_usd"
-        else:
-            total_col = "total_krw"
+
+        price_col = currency_var.get()  # 'price_php', 'price_usd', or 'price_krw'
+
         query = f"""
             SELECT o.order_id,
-                   GROUP_CONCAT(p.name SEPARATOR ', ') AS products,
-                   o.order_date,
-                   o.{total_col},
-                   o.status
+                GROUP_CONCAT(p.name SEPARATOR ', ') AS products,
+                o.order_date,
+                SUM(oi.qty * p.{price_col}) AS total,
+                o.status
             FROM orders o
             JOIN order_items oi ON o.order_id = oi.order_id
             JOIN products p ON oi.product_id = p.product_id
             WHERE o.user_id=%s
-            GROUP BY o.order_id, o.order_date, o.{total_col}, o.status
+            GROUP BY o.order_id, o.order_date, o.status
             ORDER BY o.order_date DESC
         """
         cur.execute(query, (user['user_id'],))
         for row in cur.fetchall():
             orders_tree.insert('', 'end', values=row)
         conn.close()
+
+
+    def update_cart_prices():
+        if not cart:
+            update_cart_view()
+            return
+        new_cart = []
+        conn = get_db()
+        cur = conn.cursor()
+        price_col = currency_var.get()
+        for item in cart:
+            pid, name, qty, _, cat = item
+            cur.execute(f"SELECT {price_col} FROM products WHERE product_id=%s", (pid,))
+            price_val = cur.fetchone()
+            if price_val:
+                price = float(price_val[0])
+            else:
+                price = 0.0
+            new_cart.append((pid, name, qty, price, cat))
+        conn.close()
+        cart.clear()
+        cart.extend(new_cart)
+        update_cart_view()
+
 
     def update_currency(*args):
         if currency_var.get() == "price_php":
@@ -506,6 +532,7 @@ def shop_window(user, parent_window=None):
             orders_tree.heading("Total", text="Total (KRW)")
         refresh_products()
         load_orders()
+        update_cart_prices()
 
     currency_var.trace_add("write", update_currency)
 
@@ -553,6 +580,12 @@ def admin_panel(user, parent_window):
     # Main container for notebook
     container = tk.Frame(admin, bg=BG_COLOR)
     container.pack(fill="both", expand=True)
+
+    style = ttk.Style()
+    style.theme_use('default')
+
+    # Add horizontal padding so tabs are spread out and appear centered
+    style.configure("TNotebook.Tab", padding=[40, 10])  # [x-padding, y-padding]
 
     # Create Notebook
     notebook = ttk.Notebook(container)
@@ -1010,6 +1043,10 @@ def staff_panel(user, parent_window=None):
     staff.protocol("WM_DELETE_WINDOW", lambda: (parent_window.destroy()))
 
     tk.Label(staff, text=f"Staff Panel - Welcome {user['username']}", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+    
+    style = ttk.Style()
+    style.theme_use('default')
+    style.configure("TNotebook.Tab", padding=[40, 10])
 
     notebook = ttk.Notebook(staff)
     notebook.pack(fill="both", expand=True)
