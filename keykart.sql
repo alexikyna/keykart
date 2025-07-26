@@ -154,26 +154,20 @@ DELIMITER ;
 
 -- 5. Auto-update order status
 DROP TRIGGER IF EXISTS trg_auto_update_order_status;
+
 DELIMITER $$
 CREATE TRIGGER trg_auto_update_order_status
 AFTER INSERT ON transaction_log
 FOR EACH ROW
 BEGIN
-    -- Check if the order contains any merch
     IF NEW.payment_status = 'Paid' THEN
-        IF NOT EXISTS (
+        IF EXISTS (
             SELECT 1
             FROM order_items oi
             JOIN products p ON oi.product_id = p.product_id
             WHERE oi.order_id = NEW.order_id
               AND p.category = 'merch'
         ) THEN
-            -- All items are digital, auto-complete
-            UPDATE orders
-            SET status = 'completed'
-            WHERE order_id = NEW.order_id;
-        ELSE
-            -- Has at least one merch item, keep pending
             UPDATE orders
             SET status = 'pending'
             WHERE order_id = NEW.order_id;
@@ -181,6 +175,7 @@ BEGIN
     END IF;
 END$$
 DELIMITER ;
+
 
 
 -- 1. Place Order (simplified version)
@@ -241,10 +236,17 @@ DELIMITER ;
 -- 5. Generate Sales Report
 DELIMITER $$
 CREATE PROCEDURE sp_generate_sales_report(
-    IN p_start_date DATE, IN p_end_date DATE
+    IN p_start_date DATE,
+    IN p_end_date DATE
 )
 BEGIN
-    SELECT o.order_id, u.username, o.order_date, o.total_php, o.status
+    SELECT
+        o.order_id,
+        u.username,
+        o.order_date,
+        o.total_php,
+        o.status,
+        NOW() AS generated_at
     FROM orders o
     JOIN users u ON o.user_id = u.user_id
     WHERE o.order_date BETWEEN p_start_date AND p_end_date;

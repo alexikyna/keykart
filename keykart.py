@@ -12,7 +12,7 @@ import webbrowser
 from PIL import Image, ImageTk
 import urllib.request, io
 import os
-
+import uuid
 
 # --- Global Styles ---
 BG_COLOR = "#23272f"
@@ -30,7 +30,7 @@ def get_db():
     return mysql.connector.connect(
         host="localhost",
         user="root",
-        password="DLSU1234!",
+        password="p@ssword",
         database="keykart"
     )
 
@@ -400,33 +400,43 @@ def shop_window(user, parent_window=None):
         try:
             conn = get_db()
             cur = conn.cursor()
+
+            # ✅ Place each item in cart
             for item in cart:
                 cur.callproc('sp_place_order', (user['user_id'], item[0], item[2]))
-                # After placing order, handle status for digital vs merch
                 cur.execute("SELECT LAST_INSERT_ID()")
                 order_id = cur.fetchone()[0]
-                if item[4] in ('game_key', 'in_game_currency'):
-                    # Auto-complete for digital
-                    cur.execute("UPDATE orders SET status='completed' WHERE order_id=%s", (order_id,))
-                # merch stays pending
-            # fetch latest orders for logging
-            cur.execute("SELECT order_id, total_php FROM orders WHERE user_id=%s ORDER BY order_date DESC LIMIT %s",
-                        (user['user_id'], len(cart)))
+                # ❌ Removed direct status update
+                # Orders (including game_key/currency) will remain pending
+                # until staff/admin delivers a key or manually updates
+
+            # ✅ Log payment in transaction_log
+            cur.execute("""
+                SELECT order_id, total_php 
+                FROM orders 
+                WHERE user_id=%s 
+                ORDER BY order_date DESC 
+                LIMIT %s
+            """, (user['user_id'], len(cart)))
             orders_logged = cur.fetchall()
             for order_id, total_php in orders_logged:
                 cur.execute("""
-                INSERT INTO transaction_log (order_id, payment_method, payment_status, amount)
-                VALUES (%s, %s, %s, %s)
-            """, (order_id, payment_method, 'Paid', total_php))
+                    INSERT INTO transaction_log (order_id, payment_method, payment_status, amount)
+                    VALUES (%s, %s, %s, %s)
+                """, (order_id, payment_method, 'Paid', total_php))
+
             conn.commit()
             conn.close()
+
             cart.clear()
             update_cart_view()
-            messagebox.showinfo("Order", "Order placed! Check your email for updates.")
+            messagebox.showinfo("Order", "Order placed! A staff/admin will deliver digital keys soon.")
             refresh_products()
             load_orders()
+
         except Exception as e:
             messagebox.showerror("Checkout Failed", str(e))
+
 
     def cancel_order(tree_widget, user, refresh_func):
         selected = tree_widget.selection()
@@ -808,9 +818,19 @@ def admin_panel(user, parent_window):
         webbrowser.open(f"file://{temp.name}")
         messagebox.showinfo("Print Report", "Report opened in your browser. Press Ctrl+P to print.")
 
-    tk.Button(sales_frame, text="Generate Report", font=FONT_BTN, bg=ACCENT_COLOR,
-              fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER,
-              command=load_transactions_filtered).pack(side="left", padx=10)
+    tk.Button(
+        sales_frame,
+        text="Generate Report",
+        font=FONT_BTN,
+        bg=ACCENT_COLOR,
+        fg=BTN_TEXT_COLOR,
+        activebackground=BTN_HOVER,
+        command=lambda: generate_sales_report(
+            datetime.date(start_year.get(), start_month.get(), start_day.get()),
+            datetime.date(end_year.get(), end_month.get(), end_day.get())
+        )
+    ).pack(side="left", padx=10)
+
     tk.Button(sales_frame, text="Print Report", font=FONT_BTN, bg="#4ee06e",
               fg=BTN_TEXT_COLOR, activebackground="#3ac454",
               command=print_transactions).pack(side="left", padx=10)
@@ -1251,6 +1271,49 @@ def staff_panel(user, parent_window=None):
     pending_btn_frame = tk.Frame(orders_tab, bg=BG_COLOR)
     pending_btn_frame.pack(pady=8)
 
+    def prompt_deliver_key():
+        selected = orders_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select", "Please select an order first.")
+            return
+
+        order_id = orders_tree.item(selected[0])['values'][0]
+
+        # Get the first order_item_id for this order
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT order_item_id FROM order_items WHERE order_id=%s LIMIT 1", (order_id,))
+            result = cur.fetchone()
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not fetch order item:\n{e}")
+            return
+
+        if not result:
+            messagebox.showwarning("No Item", f"No order items found for Order #{order_id}")
+            return
+
+        order_item_id = result[0]
+
+        # Auto‑generate a dummy key (replace with your logic if you have real keys)
+        auto_key = str(uuid.uuid4()).upper()[:16]  # like 'ABC123...'
+
+        # Deliver immediately
+        deliver_game_key(order_item_id, auto_key)
+
+    # In your pending_btn_frame (or wherever you want to put it):
+    tk.Button(
+        pending_btn_frame,
+        text="Deliver Game Key",
+        font=FONT_BTN,
+        bg="#4ee06e",
+        fg=BTN_TEXT_COLOR,
+        activebackground="#3ac454",
+        command=prompt_deliver_key
+    ).grid(row=0, column=2, padx=8)
+
+
     tk.Button(
         pending_btn_frame,
         text="Mark as On The Way",
@@ -1518,6 +1581,20 @@ def delete_product(tree, refresh):
         except Exception as e:
             messagebox.showerror("Error", f"Could not archive product:\n{e}")
 
+def deliver_game_key(order_item_id, game_key):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO key_deliveries (order_item_id, game_key) VALUES (%s, %s)",
+            (order_item_id, game_key)
+        )
+        conn.commit()
+        conn.close()
+        messagebox.showinfo("Success", f"Game key delivered!\nOrder item #{order_item_id} is now marked completed.")
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to deliver key:\n{e}")
+
 
 def update_stock(tree, qty_var, user, refresh):
     selected = tree.selection()
@@ -1544,31 +1621,30 @@ def generate_sales_report(startdate, enddate):
     try:
         conn = get_db()
         cur = conn.cursor()
-        # Call the procedure (inserts into sales_reports)
+
+        # ✅ Call the stored procedure
         cur.callproc('sp_generate_sales_report', (startdate, enddate))
-        conn.commit()
 
-        # Fetch rows from sales_reports for this date range
-        cur.execute("""
-            SELECT o.order_id, u.username, o.order_date, o.total_php, o.status
-            FROM orders o
-            JOIN users u ON o.user_id = u.user_id
-            WHERE o.order_date BETWEEN %s AND %s
-            ORDER BY o.order_date DESC
-        """, (startdate, enddate))
-        rows = cur.fetchall()
+        # ✅ Fetch results returned by the stored procedure
+        rows = []
+        for result in cur.stored_results():
+            rows = result.fetchall()  # rows now include generated_at
 
-
-        #  Create a new popup window
+        # ✅ Create a popup window
         report_win = tk.Toplevel()
         report_win.title("Sales Report")
         report_win.geometry("800x400")
         report_win.configure(bg=BG_COLOR)
 
-        tk.Label(report_win, text=f"Sales Report ({startdate} to {enddate})",
-                 font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+        tk.Label(
+            report_win,
+            text=f"Sales Report ({startdate} to {enddate})",
+            font=FONT_HEADER,
+            fg=ACCENT_COLOR,
+            bg=BG_COLOR
+        ).pack(pady=10)
 
-        #  Create a Treeview to display rows
+        # ✅ Treeview with 6 columns, including Generated
         tree = ttk.Treeview(
             report_win,
             columns=("OrderID", "Username", "Date", "Total", "Status", "Generated"),
@@ -1581,12 +1657,15 @@ def generate_sales_report(startdate, enddate):
             tree.column(col, anchor="center", width=120)
         tree.pack(fill="both", expand=True, padx=10, pady=10)
 
-        #  Insert rows into the Treeview
+        # ✅ Insert rows directly from procedure
         for row in rows:
             tree.insert("", "end", values=row)
 
+        conn.close()
+
     except Exception as e:
         messagebox.showerror("Error", f"Sales report failed:\n{e}")
+
 
 # ---- RUN LOGIN ----
 if __name__ == "__main__":
