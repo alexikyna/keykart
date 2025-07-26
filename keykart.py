@@ -7,6 +7,8 @@ from tkinter import filedialog
 import os
 import shutil
 import datetime
+import tempfile
+import webbrowser
 
 
 # --- Global Styles ---
@@ -40,12 +42,17 @@ def login_window():
         try:
             conn = get_db()
             cur = conn.cursor(dictionary=True)
-            cur.execute("SELECT * FROM users WHERE username=%s AND password=%s", (uname, pword))
+            # ✅ Only fetch users that are active
+            cur.execute(
+                "SELECT * FROM users WHERE username=%s AND password=%s AND is_active=1",
+                (uname, pword)
+            )
             user = cur.fetchone()
             conn.close()
         except Exception as e:
             messagebox.showerror("Database Error", f"Could not connect to MySQL.\n\n{e}")
             return
+
         if user:
             root.withdraw()
             if user['role'] == 'admin':
@@ -55,7 +62,8 @@ def login_window():
             else:
                 shop_window(user, root)
         else:
-            messagebox.showerror("Login Failed", "Invalid username or password.")
+            messagebox.showerror("Login Failed", "Invalid username or password, or account is inactive.")
+
 
     root = tk.Tk()
     root.title("KeyKart | Login")
@@ -178,7 +186,6 @@ def registration_window(parent_window=None):
     tk.Button(reg, text="Back to Login", font=FONT_BTN, bg="#e84c4c", fg="white",
               activebackground="#c9302c",
               command=lambda: (reg.destroy(), parent_window.deiconify() if parent_window else login_window())).pack(pady=5)
-
 # ---------------- SHOP WINDOW (Customer) ----------------
 def shop_window(user, parent_window=None):
     if parent_window:
@@ -260,8 +267,12 @@ def shop_window(user, parent_window=None):
               font=FONT_BTN, activebackground="#c9302c",
               command=lambda: cancel_order(orders_tree, user, load_orders)).pack(pady=6)
 
+    tk.Button(history_tab, text="Mark as Delivered", bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
+              font=FONT_BTN, activebackground=BTN_HOVER,
+              command=lambda: mark_order_delivered(orders_tree)).pack(pady=6)
+
     # === Data structures ===
-    cart = []  # (product_id, name, qty, price)
+    cart = []  # (product_id, name, qty, price, category)
 
     # === Functions ===
     def refresh_products():
@@ -309,11 +320,11 @@ def shop_window(user, parent_window=None):
         if qty > stock:
             messagebox.showwarning("Stock", "Not enough stock!")
             return
-        cart.append((pid, name, qty, price))
+        cart.append((pid, name, qty, price, cat))
         update_cart_view()
         messagebox.showinfo("Added", f"Added {qty} of {name} to cart.")
 
-    def checkout(user):
+    def checkout(user, payment_method="Cash"):
         if not cart:
             messagebox.showwarning("Cart", "Cart is empty!")
             return
@@ -322,11 +333,27 @@ def shop_window(user, parent_window=None):
             cur = conn.cursor()
             for item in cart:
                 cur.callproc('sp_place_order', (user['user_id'], item[0], item[2]))
+                # After placing order, handle status for digital vs merch
+                cur.execute("SELECT LAST_INSERT_ID()")
+                order_id = cur.fetchone()[0]
+                if item[4] in ('game_key', 'in_game_currency'):
+                    # Auto-complete for digital
+                    cur.execute("UPDATE orders SET status='completed' WHERE order_id=%s", (order_id,))
+                # merch stays pending
+            # fetch latest orders for logging
+            cur.execute("SELECT order_id, total_php FROM orders WHERE user_id=%s ORDER BY order_date DESC LIMIT %s",
+                        (user['user_id'], len(cart)))
+            orders_logged = cur.fetchall()
+            for order_id, total_php in orders_logged:
+                cur.execute("""
+                INSERT INTO transaction_log (order_id, payment_method, payment_status, amount)
+                VALUES (%s, %s, %s, %s)
+            """, (order_id, payment_method, 'Paid', total_php))
             conn.commit()
             conn.close()
             cart.clear()
             update_cart_view()
-            messagebox.showinfo("Order", "Order placed! Check your email for delivery info.")
+            messagebox.showinfo("Order", "Order placed! Check your email for updates.")
             refresh_products()
             load_orders()
         except Exception as e:
@@ -354,18 +381,37 @@ def shop_window(user, parent_window=None):
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to cancel order:\n{e}")
 
+    def mark_order_delivered(tree_widget):
+        selected = tree_widget.selection()
+        if not selected:
+            messagebox.showwarning("Select", "Choose an order to mark delivered.")
+            return
+        order_id, _, _, _, status = tree_widget.item(selected[0])['values']
+        if str(status).lower() != "on_the_way":
+            messagebox.showinfo("Not Allowed", f"Only 'On the Way' orders can be marked as delivered.")
+            return
+        if messagebox.askyesno("Mark as Delivered", f"Mark Order #{order_id} as delivered?"):
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("UPDATE orders SET status='completed' WHERE order_id=%s", (order_id,))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Delivered", f"Order #{order_id} marked as Delivered.")
+                load_orders()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to mark as delivered:\n{e}")
+
     def load_orders():
         orders_tree.delete(*orders_tree.get_children())
         conn = get_db()
         cur = conn.cursor()
-        # pick total column based on currency
         if currency_var.get() == "price_php":
             total_col = "total_php"
         elif currency_var.get() == "price_usd":
             total_col = "total_usd"
         else:
             total_col = "total_krw"
-        # fetch order info with product names
         query = f"""
             SELECT o.order_id,
                    GROUP_CONCAT(p.name SEPARATOR ', ') AS products,
@@ -407,11 +453,17 @@ def shop_window(user, parent_window=None):
     tk.Button(cart_tab, text="Remove Selected", bg="#e84c4c", fg="white",
               font=FONT_BTN, activebackground="#c9302c",
               command=remove_from_cart).pack(pady=6)
+    payment_frame = tk.Frame(cart_tab, bg=BG_COLOR)
+    payment_frame.pack(pady=6)
+    tk.Label(payment_frame, text="Payment Method:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
+    payment_method_var = tk.StringVar(value="Cash")
+    payment_cb = ttk.Combobox(payment_frame, textvariable=payment_method_var,
+                              values=["Cash", "Credit Card", "GCash"], state="readonly")
+    payment_cb.pack(side="left", padx=4)
     tk.Button(cart_tab, text="Checkout", bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
               font=FONT_BTN, activebackground=BTN_HOVER,
-              command=lambda: checkout(user)).pack(pady=6)
+              command=lambda: checkout(user, payment_method_var.get())).pack(pady=6)
 
-    # Logout
     tk.Button(shop, text="Logout", font=FONT_BTN, bg="#e84c4c", fg="white",
               activebackground="#c9302c",
               command=lambda: (shop.destroy(), parent_window.deiconify() if parent_window else login_window())).pack(pady=10)
@@ -434,8 +486,12 @@ def admin_panel(user, parent_window):
     tk.Label(admin, text=f"Admin Panel - Welcome {user['username']}",
              font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=8)
 
+    # Main container for notebook
+    container = tk.Frame(admin, bg=BG_COLOR)
+    container.pack(fill="both", expand=True)
+
     # Create Notebook
-    notebook = ttk.Notebook(admin)
+    notebook = ttk.Notebook(container)
     notebook.pack(fill="both", expand=True)
 
     # ===================== INVENTORY TAB =====================
@@ -506,26 +562,127 @@ def admin_panel(user, parent_window):
               font=FONT_BTN, activebackground="#e84c4c",
               command=lambda: delete_product(inv_tree, refresh_inventory)).grid(row=0, column=2, padx=8)
 
-    # Sales report section
-    sales_frame = tk.Frame(inventory_tab, bg=BG_COLOR)
-    sales_frame.pack(pady=6)
+    # ===================== TRANSACTION LOG TAB =====================
+    transaction_tab = tk.Frame(notebook, bg=BG_COLOR)
+    notebook.add(transaction_tab, text="Transaction Log")
+
+    tk.Label(transaction_tab, text="Transaction Log",
+             font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
+
+    trans_tree = ttk.Treeview(
+        transaction_tab,
+        columns=("TransactionID", "OrderID", "Username", "Products", "Method", "Status", "Amount", "Generated"),
+        show="headings", height=15
+    )
+    for col, width in zip(
+        ("TransactionID", "OrderID", "Username", "Products", "Method", "Status", "Amount", "Generated"),
+        (90, 80, 100, 200, 100, 100, 100, 160)
+    ):
+        trans_tree.heading(col, text=col)
+        trans_tree.column(col, anchor="center", width=width)
+    trans_tree.column("Products", anchor="w", width=220)
+    trans_tree.pack(pady=8, fill="both", expand=True)
+
+    # Date range UI
+    sales_frame = tk.Frame(transaction_tab, bg=BG_COLOR)
+    sales_frame.pack(pady=10)
     tk.Label(sales_frame, text="Sales report from (MM-DD-YYYY):",
-             font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
-    mstart = tk.IntVar(value=1); dstart = tk.IntVar(value=1); ystart = tk.IntVar(value=2024)
-    mend = tk.IntVar(value=1); dend = tk.IntVar(value=1); yend = tk.IntVar(value=2024)
-    tk.Spinbox(sales_frame, from_=1, to=12, textvariable=mstart, width=4).pack(side="left", padx=2)
-    tk.Spinbox(sales_frame, from_=1, to=31, textvariable=dstart, width=4).pack(side="left", padx=2)
-    tk.Spinbox(sales_frame, from_=1900, to=3000, textvariable=ystart, width=6).pack(side="left", padx=2)
-    tk.Label(sales_frame, text=" to ", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
-    tk.Spinbox(sales_frame, from_=1, to=12, textvariable=mend, width=4).pack(side="left", padx=2)
-    tk.Spinbox(sales_frame, from_=1, to=31, textvariable=dend, width=4).pack(side="left", padx=2)
-    tk.Spinbox(sales_frame, from_=1900, to=3000, textvariable=yend, width=6).pack(side="left", padx=2)
-    tk.Button(sales_frame, text="Generate", font=FONT_BTN, bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
-              activebackground=BTN_HOVER,
-              command=lambda: generate_sales_report(
-                  datetime.date(ystart.get(), mstart.get(), dstart.get()),
-                  datetime.date(yend.get(), mend.get(), dend.get())
-              )).pack(side="left", padx=8)
+             font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=6)
+
+    start_month = tk.IntVar(value=1)
+    start_day = tk.IntVar(value=1)
+    start_year = tk.IntVar(value=2024)
+    end_month = tk.IntVar(value=1)
+    end_day = tk.IntVar(value=1)
+    end_year = tk.IntVar(value=2024)
+
+    for var in (start_month, start_day, start_year):
+        tk.Spinbox(sales_frame, from_=1, to=12 if var == start_month else 31 if var == start_day else 3000,
+                   textvariable=var, width=5).pack(side="left", padx=2)
+    tk.Label(sales_frame, text=" to ", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=6)
+    for var in (end_month, end_day, end_year):
+        tk.Spinbox(sales_frame, from_=1, to=12 if var == end_month else 31 if var == end_day else 3000,
+                   textvariable=var, width=5).pack(side="left", padx=2)
+
+    def load_transactions_filtered():
+        start_date = datetime.date(start_year.get(), start_month.get(), start_day.get())
+        end_date = datetime.date(end_year.get(), end_month.get(), end_day.get())
+        if start_date > end_date:
+            messagebox.showerror("Date Error", "Start date must be before end date.")
+            return
+        trans_tree.delete(*trans_tree.get_children())
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT t.transaction_id, t.order_id, u.username,
+                       GROUP_CONCAT(p.name SEPARATOR ', ') AS products,
+                       t.payment_method, t.payment_status, t.amount, t.timestamp
+                FROM transaction_log t
+                JOIN orders o ON t.order_id = o.order_id
+                JOIN users u ON o.user_id = u.user_id
+                JOIN order_items oi ON o.order_id = oi.order_id
+                JOIN products p ON oi.product_id = p.product_id
+                WHERE DATE(t.timestamp) BETWEEN %s AND %s
+                GROUP BY t.transaction_id, t.order_id, u.username, t.payment_method,
+                         t.payment_status, t.amount, t.timestamp
+                ORDER BY t.timestamp DESC
+            """, (start_date, end_date))
+            for row in cur.fetchall():
+                trans_tree.insert('', 'end', values=row)
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load transactions:\n{e}")
+
+    def print_transactions():
+        rows = [trans_tree.item(i)['values'] for i in trans_tree.get_children()]
+        if not rows:
+            messagebox.showinfo("Print Report", "No data to print. Generate a report first.")
+            return
+        html = "<html><head><title>Transaction Report</title></head><body><h2>Transaction Report</h2><table border='1'>"
+        html += "<tr>" + "".join(f"<th>{c}</th>" for c in ("TransactionID","OrderID","Username","Products","Method","Status","Amount","Generated")) + "</tr>"
+        for r in rows:
+            html += "<tr>" + "".join(f"<td>{v}</td>" for v in r) + "</tr>"
+        html += "</table></body></html>"
+        temp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
+        temp.write(html.encode('utf-8')); temp.close()
+        webbrowser.open(f"file://{temp.name}")
+        messagebox.showinfo("Print Report", "Report opened in your browser. Press Ctrl+P to print.")
+
+    tk.Button(sales_frame, text="Generate Report", font=FONT_BTN, bg=ACCENT_COLOR,
+              fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER,
+              command=load_transactions_filtered).pack(side="left", padx=10)
+    tk.Button(sales_frame, text="Print Report", font=FONT_BTN, bg="#4ee06e",
+              fg=BTN_TEXT_COLOR, activebackground="#3ac454",
+              command=print_transactions).pack(side="left", padx=10)
+
+    # Initial load
+    def load_all_transactions():
+        trans_tree.delete(*trans_tree.get_children())
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT t.transaction_id, t.order_id, u.username,
+                       GROUP_CONCAT(p.name SEPARATOR ', ') AS products,
+                       t.payment_method, t.payment_status, t.amount, t.timestamp
+                FROM transaction_log t
+                JOIN orders o ON t.order_id = o.order_id
+                JOIN users u ON o.user_id = u.user_id
+                JOIN order_items oi ON o.order_id = oi.order_id
+                JOIN products p ON oi.product_id = p.product_id
+                GROUP BY t.transaction_id, t.order_id, u.username, t.payment_method,
+                         t.payment_status, t.amount, t.timestamp
+                ORDER BY t.timestamp DESC
+            """)
+            for row in cur.fetchall():
+                trans_tree.insert('', 'end', values=row)
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load transactions:\n{e}")
+
+    load_all_transactions()
+
 
     # ===================== USER ROLES TAB =====================
     roles_tab = tk.Frame(notebook, bg=BG_COLOR)
@@ -618,12 +775,24 @@ def admin_panel(user, parent_window):
               fg=BTN_TEXT_COLOR, activebackground="#e84c4c",
               command=delete_user).grid(row=0, column=1, padx=8)
 
-    # ===================== ARCHIVED USERS TAB =====================
+# ===================== ARCHIVED USERS TAB =====================
     archived_tab = tk.Frame(notebook, bg=BG_COLOR)
     notebook.add(archived_tab, text="Archived Users")
 
-    tk.Label(archived_tab, text="Archived Users", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
-    archived_tree = ttk.Treeview(archived_tab, columns=("UserID", "Username", "Email", "Role", "ArchivedAt"), show="headings", height=12)
+    tk.Label(
+        archived_tab,
+        text="Archived Users",
+        font=FONT_HEADER,
+        fg=ACCENT_COLOR,
+        bg=BG_COLOR
+    ).pack(pady=10)
+
+    archived_tree = ttk.Treeview(
+        archived_tab,
+        columns=("UserID", "Username", "Email", "Role", "ArchivedAt"),
+        show="headings",
+        height=12
+    )
     for col in ("UserID", "Username", "Email", "Role", "ArchivedAt"):
         archived_tree.heading(col, text=col)
         archived_tree.column(col, anchor="center", width=140)
@@ -641,18 +810,69 @@ def admin_panel(user, parent_window):
         except Exception as e:
             messagebox.showerror("Error", f"Could not load archived users:\n{e}")
 
+    def reactivate_user():
+        selected = archived_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select", "Choose a user to reactivate.")
+            return
+
+        uid, uname, email, role, archived_at = archived_tree.item(selected[0])['values']
+
+        if messagebox.askyesno("Reactivate", f"Reactivate user '{uname}'?"):
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                # ✅ Set is_active back to 1
+                cur.execute("UPDATE users SET is_active = 1 WHERE user_id = %s", (uid,))
+                # ✅ Remove from archive
+                cur.execute("DELETE FROM user_archive WHERE user_id = %s", (uid,))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Reactivated", f"User '{uname}' has been reactivated.")
+                load_archived_users()
+                load_users()
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not reactivate user:\n{e}")
+
+    # Frame for reactivate button
+    reactivate_btn_frame = tk.Frame(archived_tab, bg=BG_COLOR)
+    reactivate_btn_frame.pack(pady=8)
+
+    tk.Button(
+        reactivate_btn_frame,
+        text="Reactivate User",
+        font=FONT_BTN,
+        bg="#4ee06e",
+        fg=BTN_TEXT_COLOR,
+        activebackground="#3ac454",
+        command=reactivate_user
+    ).pack()
+
+    
+
     # Initial loads
     refresh_inventory()
     load_users()
     load_archived_users()
-
-    # Logout Button
-    tk.Button(admin, text="Logout", font=FONT_BTN, bg="#e84c4c", fg="white",
-              activebackground="#c9302c",
-              command=lambda: (admin.destroy(), parent_window.deiconify() if parent_window else login_window())).pack(pady=10)
+    load_all_transactions()
 
 
-    # ==================== staff panel ====================
+
+    # Add logout at bottom
+    logout_frame = tk.Frame(admin, bg=BG_COLOR)
+    logout_frame.pack(side="bottom", pady=10)
+    tk.Button(
+        logout_frame,
+        text="Logout",
+        font=FONT_BTN,
+        bg="#e84c4c",
+        fg="white",
+        activebackground="#c9302c",
+        command=lambda: (admin.destroy(), parent_window.deiconify() if parent_window else login_window())
+    ).pack()
+
+
+# ==================== staff panel ====================
 def staff_panel(user, parent_window=None):
     if parent_window:
         parent_window.withdraw()
@@ -741,7 +961,6 @@ def staff_panel(user, parent_window=None):
 
     tk.Label(orders_tab, text="Pending Orders", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=8)
 
-    # Updated columns: include Products after OrderID
     orders_tree = ttk.Treeview(orders_tab,
                                columns=("OrderID","Products","UserID","Date","Total","Status"),
                                show="headings", height=15)
@@ -785,36 +1004,85 @@ def staff_panel(user, parent_window=None):
         except Exception as e:
             messagebox.showerror("Error", f"Could not load orders:\n{e}")
 
-    def mark_as_delivered():
+    def mark_as_on_the_way():
         selected = orders_tree.selection()
         if not selected:
-            messagebox.showwarning("Select", "Choose an order to deliver.")
+            messagebox.showwarning("Select", "Choose an order to update.")
             return
         order_id = orders_tree.item(selected[0])['values'][0]
-
-        if messagebox.askyesno("Confirm", f"Mark Order #{order_id} as delivered?"):
+        if messagebox.askyesno("Confirm", f"Mark Order #{order_id} as On the Way?"):
             try:
                 conn = get_db()
                 cur = conn.cursor()
-                cur.execute("SELECT order_item_id FROM order_items WHERE order_id = %s", (order_id,))
-                item_ids = cur.fetchall()
-                for (item_id,) in item_ids:
-                    generated_key = f"KEY-{item_id}-{datetime.datetime.now().strftime('%H%M%S')}"
-                    cur.execute("INSERT INTO key_deliveries (order_item_id, game_key) VALUES (%s, %s)",
-                                (item_id, generated_key))
+                cur.execute("UPDATE orders SET status='on_the_way' WHERE order_id=%s", (order_id,))
                 conn.commit()
                 conn.close()
-                messagebox.showinfo("Delivered", f"Order #{order_id} marked as delivered. Keys recorded.")
+                messagebox.showinfo("Updated", f"Order #{order_id} is now On the Way.")
                 load_pending_orders()
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to deliver order:\n{e}")
+                messagebox.showerror("Error", f"Failed to update order:\n{e}")
 
-    btn_frame = tk.Frame(orders_tab, bg=BG_COLOR)
-    btn_frame.pack(pady=10)
-    tk.Button(btn_frame, text="Mark as Delivered", font=FONT_BTN, bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
-              activebackground=BTN_HOVER, command=mark_as_delivered).pack(side="left", padx=8)
-    tk.Button(btn_frame, text="Refresh", font=FONT_BTN, bg="#e0e1ea", fg="#23272f",
-              activebackground="#cacbd1", command=load_pending_orders).pack(side="left", padx=8)
+    # Buttons for pending orders
+    pending_btn_frame = tk.Frame(orders_tab, bg=BG_COLOR)
+    pending_btn_frame.pack(pady=8)
+
+    tk.Button(
+        pending_btn_frame,
+        text="Mark as On The Way",
+        font=FONT_BTN,
+        bg=ACCENT_COLOR,
+        fg=BTN_TEXT_COLOR,
+        activebackground=BTN_HOVER,
+        command=mark_as_on_the_way
+    ).grid(row=0, column=0, padx=8)
+
+    tk.Button(
+        pending_btn_frame,
+        text="Refresh",
+        font=FONT_BTN,
+        bg="#e0e1ea",
+        fg="#23272f",
+        activebackground="#cacbd1",
+        command=load_pending_orders
+    ).grid(row=0, column=1, padx=8)
+    # ==================== ON THE WAY ORDERS TAB ====================
+    ontheway_tab = tk.Frame(notebook, bg=BG_COLOR)
+    notebook.add(ontheway_tab, text="On The Way Orders")
+
+    tk.Label(ontheway_tab, text="On The Way Orders", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=8)
+
+    ontheway_tree = ttk.Treeview(ontheway_tab,
+                                 columns=("OrderID","Products","UserID","Date","Total","Status"),
+                                 show="headings", height=15)
+    for col in ("OrderID","Products","UserID","Date","Total","Status"):
+        ontheway_tree.heading(col, text=col)
+        ontheway_tree.column(col, anchor="center", width=120)
+    ontheway_tree.column("Products", width=300, anchor="w")
+    ontheway_tree.pack(pady=10, fill="both", expand=True)
+
+    def load_on_the_way_orders():
+        ontheway_tree.delete(*ontheway_tree.get_children())
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT o.order_id, GROUP_CONCAT(p.name SEPARATOR ', ') AS products,
+                       o.user_id, o.order_date, o.total_php, o.status
+                FROM orders o
+                JOIN order_items oi ON o.order_id = oi.order_id
+                JOIN products p ON oi.product_id = p.product_id
+                WHERE o.status='on_the_way'
+                GROUP BY o.order_id, o.user_id, o.order_date, o.total_php, o.status
+                ORDER BY o.order_date DESC
+            """)
+            for row in cur.fetchall():
+                ontheway_tree.insert('', 'end', values=row)
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load On The Way orders:\n{e}")
+
+    tk.Button(ontheway_tab, text="Refresh", font=FONT_BTN, bg="#e0e1ea", fg="#23272f",
+              activebackground="#cacbd1", command=load_on_the_way_orders).pack(pady=10)
 
     # ==================== DELIVERED ORDERS TAB ====================
     delivered_tab = tk.Frame(notebook, bg=BG_COLOR)
@@ -827,12 +1095,7 @@ def staff_panel(user, parent_window=None):
                                   show="headings", height=15)
     for col in ("OrderID","Products","UserID","Date","Total","Status"):
         delivered_tree.heading(col, text=col)
-    delivered_tree.column("OrderID", width=80, anchor="center")
-    delivered_tree.column("Products", width=300, anchor="w")
-    delivered_tree.column("UserID", width=80, anchor="center")
-    delivered_tree.column("Date", width=150, anchor="center")
-    delivered_tree.column("Total", width=100, anchor="center")
-    delivered_tree.column("Status", width=100, anchor="center")
+        delivered_tree.column(col, anchor="center", width=120)
     delivered_tree.pack(pady=10, fill="both", expand=True)
 
     def load_delivered_orders():
@@ -865,6 +1128,7 @@ def staff_panel(user, parent_window=None):
 
     # Initial loads
     load_pending_orders()
+    load_on_the_way_orders()
     load_delivered_orders()
 
     # Back button
@@ -929,8 +1193,30 @@ def add_product(tree, refresh):
             messagebox.showerror("Error", "Price PHP must be a valid number.")
             return
 
-        usd_rate = 58.0   # 1 USD = 58 PHP
-        krw_rate = 23.6   # 1 PHP = 23.6 KRW
+        try:
+            conn = get_db()
+            cur = conn.cursor(dictionary=True)
+            # Fetch currency rates
+            cur.execute("SELECT currency_code, exchange_rate_to_usd FROM currencies")
+            rates = cur.fetchall()
+            conn.close()
+
+            # Default fallback values
+            usd_rate = 58.0
+            krw_rate = 23.6
+
+            # Parse rates from table
+            for r in rates:
+                if r['currency_code'] == 'USD':
+                    usd_rate = float(r['exchange_rate_to_usd'])
+                elif r['currency_code'] == 'KRW':
+                    # 1 PHP to KRW = (1 / USD rate) * (KRW/USD)
+                    # OR you can store a direct PHP->KRW in the table if you prefer
+                    # For now assume exchange_rate_to_usd is also valid for KRW
+                    # (Adjust logic if your table stores differently)
+                    krw_rate = 23.6
+        except Exception as e:
+            messagebox.showwarning("Currency Warning", f"Could not load currency rates. Using default.\n{e}")
 
         # Auto‑convert to USD and KRW
         usd_price = round(php_price / usd_rate, 2)

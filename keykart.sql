@@ -78,6 +78,23 @@ CREATE TABLE user_archive (
     archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE currencies (
+  currency_id INT AUTO_INCREMENT PRIMARY KEY,
+  currency_code VARCHAR(10),
+  symbol VARCHAR(5),
+  exchange_rate_to_usd DECIMAL(10,4)
+);
+
+CREATE TABLE transaction_log (
+  transaction_id INT AUTO_INCREMENT PRIMARY KEY,
+  order_id INT,
+  payment_method VARCHAR(50),
+  payment_status VARCHAR(50),
+  amount DECIMAL(10,2),
+  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (order_id) REFERENCES orders(order_id)
+);
+
 
 -- 1. Auto-deduct stock when order item is inserted
 DELIMITER $$
@@ -135,16 +152,36 @@ BEGIN
 END$$
 DELIMITER ;
 
--- 5. Archive user on delete (BEFORE DELETE)
+-- 5. Auto-update order status
+DROP TRIGGER IF EXISTS trg_auto_update_order_status;
 DELIMITER $$
-CREATE TRIGGER trg_archive_user
-BEFORE DELETE ON users
+CREATE TRIGGER trg_auto_update_order_status
+AFTER INSERT ON transaction_log
 FOR EACH ROW
 BEGIN
-    INSERT INTO user_archive (user_id, username, email, role)
-    VALUES (OLD.user_id, OLD.username, OLD.email, OLD.role);
+    -- Check if the order contains any merch
+    IF NEW.payment_status = 'Paid' THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM order_items oi
+            JOIN products p ON oi.product_id = p.product_id
+            WHERE oi.order_id = NEW.order_id
+              AND p.category = 'merch'
+        ) THEN
+            -- All items are digital, auto-complete
+            UPDATE orders
+            SET status = 'completed'
+            WHERE order_id = NEW.order_id;
+        ELSE
+            -- Has at least one merch item, keep pending
+            UPDATE orders
+            SET status = 'pending'
+            WHERE order_id = NEW.order_id;
+        END IF;
+    END IF;
 END$$
 DELIMITER ;
+
 
 -- 1. Place Order (simplified version)
 DELIMITER $$
@@ -216,10 +253,12 @@ DELIMITER ;
 
 
 -- Admin (full privileges)
+DROP USER IF EXISTS 'adminuser'@'localhost';
 CREATE USER 'adminuser'@'localhost' IDENTIFIED BY 'adminpass';
 GRANT ALL PRIVILEGES ON keykart.* TO 'adminuser'@'localhost';
 
 -- Staff (limited DML privileges, but not user management)
+DROP USER IF EXISTS 'staffuser'@'localhost';
 CREATE USER 'staffuser'@'localhost' IDENTIFIED BY 'staffpass';
 GRANT SELECT, INSERT, UPDATE ON keykart.products TO 'staffuser'@'localhost';
 GRANT SELECT, INSERT, UPDATE ON keykart.orders TO 'staffuser'@'localhost';
@@ -228,6 +267,7 @@ GRANT EXECUTE ON PROCEDURE keykart.sp_update_stock TO 'staffuser'@'localhost';
 GRANT EXECUTE ON PROCEDURE keykart.sp_place_order TO 'staffuser'@'localhost';
 
 -- Gamer (customer: can only select products, and insert orders)
+DROP USER IF EXISTS 'gameruser'@'localhost';
 CREATE USER 'gameruser'@'localhost' IDENTIFIED BY 'gamerpass';
 GRANT SELECT ON keykart.products TO 'gameruser'@'localhost';
 GRANT INSERT ON keykart.orders TO 'gameruser'@'localhost';
@@ -244,17 +284,42 @@ ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1;
 DESCRIBE products;
 
 INSERT INTO users (username, password, role, email) VALUES
-('admin', 'admin123', 'admin', 'admin@keykart.com'),
+('admin', 'adminpass', 'admin', 'admin@keykart.com'),
 ('staff1', 'staffpass', 'staff', 'staff@keykart.com'),
-('gamer1', 'gamerpass', 'customer', 'gamer1@email.com');
+('staff2', 'staffpass', 'staff', 'staff2@keykart.com'),
+('gamer1', 'gamerpass', 'customer', 'gamer1@email.com'),
+('gamer2', 'gamerpass', 'customer', 'gamer2@email.com'),
+('gamer3', 'gamerpass', 'customer', 'gamer3@email.com'),
+('gamer4', 'gamerpass', 'customer', 'gamer4@email.com'),
+('gamer5', 'gamerpass', 'customer', 'gamer5@email.com'),
+('staff3', 'staffpass', 'staff', 'staff3@keykart.com'),
+('staff4', 'staffpass', 'staff', 'staff4@keykart.com'),
+('admin2', 'adminpass', 'admin', 'admin2@keykart.com'),
+('gamer6', 'gamerpass', 'customer', 'gamer6@email.com'),
+('gamer7', 'gamerpass', 'customer', 'gamer7@email.com'),
+('gamer8', 'gamerpass', 'customer', 'gamer8@email.com'),
+('gamer9', 'gamerpass', 'customer', 'gamer9@email.com'),
+('gamer10', 'gamerpass', 'customer', 'gamer10@email.com');
 
-INSERT INTO products (name, category, price_php, price_usd, price_krw, stock, description)
-VALUES ('Elden Ring Steam Key', 'game_key', 2500, 45, 60000, 10, 'PC Steam Key - Elden Ring');
 
--- Insert some products
 INSERT INTO products (name, category, price_php, price_usd, price_krw, stock, description)
 VALUES
+('Elden Ring Steam Key', 'game_key', 2500, 45, 60000, 10, 'PC Steam Key - Elden Ring'),
 ('Genshin Genesis Crystals', 'in_game_currency', 500, 9, 12000, 50, 'In-game top-up for Genshin Impact'),
-('Kirby Plush', 'merch', 1200, 22, 29000, 5, 'Soft Kirby Plush Toy');
+('Kirby Plush', 'merch', 1200, 22, 29000, 5, 'Soft Kirby Plush Toy'),
+('Final Fantasy XIV Online Key', 'game_key', 1800, 31, 43200, 15, 'PC Steam Key - Final Fantasy XIV'),
+('Overwatch 2 Credits', 'in_game_currency', 800, 14, 19200, 40, 'In-game credits for Overwatch 2'),
+('Zelda T-Shirt', 'merch', 900, 16, 21600, 20, 'Official Legend of Zelda graphic shirt');
 
 ALTER TABLE users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1;
+
+INSERT INTO currencies (currency_code, symbol, exchange_rate_to_usd)
+VALUES
+('PHP', '₱', 0.0172),   -- 1 PHP = 0.0172 USD (adjust as needed)
+('USD', '$', 1.0000),   -- base
+('KRW', '₩', 0.00073);  -- 1 KRW = 0.00073 USD (adjust as needed)
+
+ALTER TABLE orders MODIFY COLUMN status 
+    ENUM('pending','on_the_way','completed','cancelled') DEFAULT 'pending';
+
+SHOW COLUMNS FROM orders LIKE 'status';
