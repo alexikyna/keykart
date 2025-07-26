@@ -208,13 +208,33 @@ def shop_window(user, parent_window=None):
     tk.Label(shop, text=f"Welcome, {user['username']}!", font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=5)
 
     # --- Currency selector (shared) ---
-    currency_var = tk.StringVar(value="price_php")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT currency_code FROM currencies")
+    currency_codes = [row[0] for row in cur.fetchall()]
+    conn.close()
+
+    if not currency_codes:
+        currency_codes = ["PHP"]  # fallback
+
+    currency_var = tk.StringVar(value=currency_codes[0])
+
     currency_frame = tk.Frame(shop, bg=BG_COLOR)
     currency_frame.pack(pady=4)
     tk.Label(currency_frame, text="Currency:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=5)
     currency_cb = ttk.Combobox(currency_frame, textvariable=currency_var,
-                               values=["price_php", "price_usd", "price_krw"], state="readonly")
+                            values=currency_codes, state="readonly")
     currency_cb.pack(side="left", padx=5)
+
+    def on_currency_change(*args):
+        tree.heading("Price", text=f"Price ({currency_var.get()})")
+        orders_tree.heading("Total", text=f"Total ({currency_var.get()})")
+        refresh_products()
+        update_cart_prices()
+        load_orders()
+
+    currency_var.trace_add("write", on_currency_change)
+
 
     notebook = ttk.Notebook(shop)
     notebook.pack(fill="both", expand=True)
@@ -230,28 +250,38 @@ def shop_window(user, parent_window=None):
         tree.column(col, anchor="center", width=150)
     tree.pack(pady=10, fill="both", expand=True)
 
-        # --- Popup for product details in shop window ---
+    # inside shop_window (AFTER you create `tree`):
     def show_product_popup_customer(event):
         selected = tree.selection()
         if not selected:
             return
         pid = tree.item(selected[0])['values'][0]
+
         try:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("""SELECT name, category, description,
-                                  price_php, price_usd, price_krw, stock, image_url
-                           FROM products WHERE product_id=%s""", (pid,))
-            result = cur.fetchone()
+            cur.execute("SELECT name, category, description, base_price_php, stock, image_url FROM products WHERE product_id=%s", (pid,))
+            product = cur.fetchone()
             conn.close()
         except Exception as e:
             messagebox.showerror("DB Error", f"Failed to fetch product:\n{e}")
             return
 
-        if not result:
+        if not product:
             return
 
-        name, category, desc, php, usd, krw, stock, image_url = result
+        name, category, desc, base_price_php, stock, image_url = product
+
+        # fetch currencies
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT currency_code, symbol, exchange_rate_to_php FROM currencies")
+            currencies = cur.fetchall()
+            conn.close()
+        except:
+            currencies = [("PHP","₱",1.0)]
+
         popup = tk.Toplevel(shop)
         popup.title(name)
         popup.geometry("400x500")
@@ -259,11 +289,13 @@ def shop_window(user, parent_window=None):
 
         tk.Label(popup, text=name, font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
         tk.Label(popup, text=f"Category: {category}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Description: {desc}", font=FONT_LABEL, fg=FG_TEXT,
-                 bg=BG_COLOR, wraplength=380, justify="left").pack(pady=2)
-        tk.Label(popup, text=f"Price (PHP): {php}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Price (USD): {usd}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Price (KRW): {krw}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+        tk.Label(popup, text=f"Description: {desc}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR, wraplength=380, justify="left").pack(pady=2)
+
+        # dynamic currencies
+        for code, symbol, rate in currencies:
+            converted = float(base_price_php) * float(rate)
+            tk.Label(popup, text=f"Price ({code}): {symbol}{converted:.2f}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
+
         tk.Label(popup, text=f"Stock: {stock}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
 
         img_label = tk.Label(popup, bg=BG_COLOR)
@@ -271,7 +303,7 @@ def shop_window(user, parent_window=None):
 
         try:
             if image_url:
-                if image_url.startswith("http://") or image_url.startswith("https://"):
+                if image_url.startswith("http"):
                     with urllib.request.urlopen(image_url) as u:
                         raw = u.read()
                     im = Image.open(io.BytesIO(raw))
@@ -279,7 +311,7 @@ def shop_window(user, parent_window=None):
                     if not os.path.isabs(image_url):
                         image_url = os.path.join(os.getcwd(), image_url)
                     im = Image.open(image_url)
-                im = im.resize((150, 150))
+                im = im.resize((150,150))
                 photo = ImageTk.PhotoImage(im)
                 img_label.config(image=photo)
                 img_label.image = photo
@@ -288,7 +320,9 @@ def shop_window(user, parent_window=None):
         except Exception as e:
             img_label.config(text="Error loading image", fg="red")
 
+    # ✅ bind AFTER defining function
     tree.bind("<Double-1>", show_product_popup_customer)
+
 
 
     qty_frame = tk.Frame(catalog_tab, bg=BG_COLOR)
@@ -346,13 +380,27 @@ def shop_window(user, parent_window=None):
     # === Functions ===
     def refresh_products():
         tree.delete(*tree.get_children())
+        # fetch all products
         conn = get_db()
-        cur = conn.cursor()
-        price_col = currency_var.get()
-        cur.execute(f"SELECT product_id, name, category, {price_col}, stock FROM products WHERE is_active=1")
-        for row in cur.fetchall():
-            tree.insert('', 'end', values=row)
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT product_id,name,category,base_price_php,stock FROM products WHERE is_active=1")
+        products = cur.fetchall()
         conn.close()
+
+        # get selected currency's rate
+        selected_currency = currency_var.get()
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT exchange_rate_to_php FROM currencies WHERE currency_code=%s", (selected_currency,))
+        row = cur.fetchone()
+        conn.close()
+        rate = float(row['exchange_rate_to_php']) if row else 1.0
+
+        # insert rows with converted price
+        for p in products:
+            converted = float(p['base_price_php']) * rate
+            tree.insert('', 'end', values=(p['product_id'], p['name'], p['category'], f"{converted:.2f}", p['stock']))
+
 
     def update_cart_view():
         cart_tree.delete(*cart_tree.get_children())
@@ -378,19 +426,22 @@ def shop_window(user, parent_window=None):
         if not selected:
             messagebox.showwarning("Select", "Choose a product!")
             return
+
         pid, name, cat, price_str, stock_str = tree_widget.item(selected[0])['values']
         try:
-            price = float(price_str)
             stock = int(stock_str)
         except ValueError:
-            messagebox.showerror("Data Error", "Invalid price or stock.")
+            messagebox.showerror("Data Error", "Invalid stock value.")
             return
+
         qty = qty_var.get()
         if qty > stock:
             messagebox.showwarning("Stock", "Not enough stock!")
             return
-        cart.append((pid, name, qty, price, cat))
-        update_cart_view()
+
+        # price will be recalculated later in update_cart_prices
+        cart.append((pid, name, qty, 0, cat))
+        update_cart_prices()
         messagebox.showinfo("Added", f"Added {qty} of {name} to cart.")
 
     def checkout(user, payment_method="Cash"):
@@ -483,16 +534,15 @@ def shop_window(user, parent_window=None):
 
     def load_orders():
         orders_tree.delete(*orders_tree.get_children())
+
+        # 1. Fetch orders in PHP
         conn = get_db()
         cur = conn.cursor()
-
-        price_col = currency_var.get()  # 'price_php', 'price_usd', or 'price_krw'
-
-        query = f"""
+        cur.execute("""
             SELECT o.order_id,
                 GROUP_CONCAT(p.name SEPARATOR ', ') AS products,
                 o.order_date,
-                SUM(oi.qty * p.{price_col}) AS total,
+                SUM(oi.qty * p.base_price_php) AS total_php,
                 o.status
             FROM orders o
             JOIN order_items oi ON o.order_id = oi.order_id
@@ -500,55 +550,137 @@ def shop_window(user, parent_window=None):
             WHERE o.user_id=%s
             GROUP BY o.order_id, o.order_date, o.status
             ORDER BY o.order_date DESC
-        """
-        cur.execute(query, (user['user_id'],))
-        for row in cur.fetchall():
-            orders_tree.insert('', 'end', values=row)
+        """, (user['user_id'],))
+        rows = cur.fetchall()
         conn.close()
 
+        # 2. Get selected currency’s exchange rate
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT exchange_rate_to_php FROM currencies WHERE currency_code=%s", (currency_var.get(),))
+        row = cur.fetchone()
+        conn.close()
+        rate = float(row['exchange_rate_to_php']) if row else 1.0
+
+        # 3. Insert converted totals
+        for r in rows:
+            # r should have exactly 5 values in this order:
+            order_id = r[0]
+            products = r[1]
+            order_date = r[2]
+            total_php = r[3]
+            status = r[4]
+            converted_total = float(total_php) * rate if total_php is not None else 0.0
+            orders_tree.insert('', 'end', values=(order_id, products, order_date, f"{converted_total:.2f}", status))
+
+
+        # get currency rate
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT exchange_rate_to_php FROM currencies WHERE currency_code=%s", (currency_var.get(),))
+        row = cur.fetchone()
+        conn.close()
+        rate = float(row['exchange_rate_to_php']) if row else 1.0
+
+        # insert converted totals
+        for order_id, products, order_date, total_php, status in rows:
+            converted_total = float(total_php) * rate
+            orders_tree.insert('', 'end', values=(order_id, products, order_date, f"{converted_total:.2f}", status))
 
     def update_cart_prices():
         if not cart:
-            update_cart_view()
+            cart_tree.delete(*cart_tree.get_children())
+            cart_total_label.config(text="Total: 0.00")
             return
-        new_cart = []
+
+        # get currency rate
+        selected_currency = currency_var.get()
         conn = get_db()
-        cur = conn.cursor()
-        price_col = currency_var.get()
-        for item in cart:
-            pid, name, qty, _, cat = item
-            cur.execute(f"SELECT {price_col} FROM products WHERE product_id=%s", (pid,))
-            price_val = cur.fetchone()
-            if price_val:
-                price = float(price_val[0])
-            else:
-                price = 0.0
-            new_cart.append((pid, name, qty, price, cat))
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT exchange_rate_to_php FROM currencies WHERE currency_code=%s", (selected_currency,))
+        row = cur.fetchone()
         conn.close()
-        cart.clear()
-        cart.extend(new_cart)
-        update_cart_view()
+        rate = float(row['exchange_rate_to_php']) if row else 1.0
+
+        cart_tree.delete(*cart_tree.get_children())
+        total = 0.0
+        for item in cart:
+            pid, pname, qty, _, cat = item
+            # get base price
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT base_price_php FROM products WHERE product_id=%s", (pid,))
+            base_price = cur.fetchone()[0]
+            conn.close()
+
+            converted_price = float(base_price) * rate
+            subtotal = converted_price * qty
+            total += subtotal
+            cart_tree.insert("", "end", values=(pname, qty, f"{converted_price:.2f}", f"{subtotal:.2f}"))
+
+        cart_total_label.config(text=f"Total: {total:.2f}")
 
 
     def update_currency(*args):
-        if currency_var.get() == "price_php":
-            tree.heading("Price", text="Price (PHP)")
-            orders_tree.heading("Total", text="Total (PHP)")
-        elif currency_var.get() == "price_usd":
-            tree.heading("Price", text="Price (USD)")
-            orders_tree.heading("Total", text="Total (USD)")
-        else:
-            tree.heading("Price", text="Price (KRW)")
-            orders_tree.heading("Total", text="Total (KRW)")
+        # Update headings dynamically based on selected currency
+        selected = currency_var.get()  # e.g. "PHP", "USD", "KRW"
+        tree.heading("Price", text=f"Price ({selected})")
+        orders_tree.heading("Total", text=f"Total ({selected})")
+
+        # Refresh all data with the new currency rate
         refresh_products()
         load_orders()
         update_cart_prices()
 
+    # Bind the trace
     currency_var.trace_add("write", update_currency)
+
+
+
+    # =============== Tab 4: Delivered Game Keys ===============
+    keys_tab = tk.Frame(notebook, bg=BG_COLOR)
+    notebook.add(keys_tab, text="Game Keys")
+
+    keys_tree = ttk.Treeview(keys_tab,
+                            columns=("OrderID", "Product", "Key", "DeliveredAt"),
+                            show="headings", height=12)
+    for col, width in zip(("OrderID", "Product", "Key", "DeliveredAt"), (100, 200, 250, 150)):
+        keys_tree.heading(col, text=col)
+        keys_tree.column(col, anchor="center", width=width)
+    keys_tree.column("Product", anchor="w", width=200)
+    keys_tree.pack(pady=10, fill="both", expand=True)
+
+    def load_game_keys():
+        keys_tree.delete(*keys_tree.get_children())
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            # ✅ join orders, order_items, products, key_deliveries
+            cur.execute("""
+                SELECT o.order_id, p.name, k.game_key, k.delivered_at
+                FROM key_deliveries k
+                JOIN order_items oi ON k.order_item_id = oi.order_item_id
+                JOIN products p ON oi.product_id = p.product_id
+                JOIN orders o ON oi.order_id = o.order_id
+                WHERE o.user_id = %s
+                ORDER BY k.delivered_at DESC
+            """, (user['user_id'],))
+            for row in cur.fetchall():
+                keys_tree.insert('', 'end', values=row)
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load game keys:\n{e}")
+
+    # Add a refresh button
+    tk.Button(keys_tab, text="Refresh", font=FONT_BTN, bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
+            activebackground=BTN_HOVER, command=load_game_keys).pack(pady=6)
+
 
     # Initial load
     refresh_products()
     load_orders()
+    load_game_keys()
+
 
     # Cart tab buttons
     tk.Button(cart_tab, text="Remove Selected", bg="#e84c4c", fg="white",
@@ -573,7 +705,7 @@ def shop_window(user, parent_window=None):
 
 
 # ===================== ADMIN PANEL =====================
-
+# ===================== ADMIN PANEL =====================
 def admin_panel(user, parent_window):
     if parent_window:
         parent_window.withdraw()
@@ -587,17 +719,14 @@ def admin_panel(user, parent_window):
     tk.Label(admin, text=f"Admin Panel - Welcome {user['username']}",
              font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=8)
 
-    # Main container for notebook
+    # --- Notebook setup ---
     container = tk.Frame(admin, bg=BG_COLOR)
     container.pack(fill="both", expand=True)
 
     style = ttk.Style()
     style.theme_use('default')
+    style.configure("TNotebook.Tab", padding=[40, 10])  # center tabs
 
-    # Add horizontal padding so tabs are spread out and appear centered
-    style.configure("TNotebook.Tab", padding=[40, 10])  # [x-padding, y-padding]
-
-    # Create Notebook
     notebook = ttk.Notebook(container)
     notebook.pack(fill="both", expand=True)
 
@@ -613,102 +742,105 @@ def admin_panel(user, parent_window):
         inv_tree.column(col, anchor="center", width=120)
     inv_tree.pack(pady=8, fill="both", expand=True)
 
-        # --- Popup for product details ---
+    # Currency dropdown
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT currency_code FROM currencies")
+    db_currencies = [row[0] for row in cur.fetchall()]
+    conn.close()
+    if not db_currencies:
+        db_currencies = ["PHP"]
+    currency_var = tk.StringVar(value=db_currencies[0])
+
+    currency_frame = tk.Frame(inventory_tab, bg=BG_COLOR)
+    currency_frame.pack()
+    tk.Label(currency_frame, text="Currency:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=5)
+    currency_cb = ttk.Combobox(currency_frame, textvariable=currency_var,
+                               values=db_currencies, state="readonly")
+    currency_cb.pack(side="left", padx=5)
+
+    # Refresh inventory
+    def refresh_inventory():
+        inv_tree.delete(*inv_tree.get_children())
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT product_id,name,category,base_price_php,stock FROM products WHERE is_active=1")
+        products = cur.fetchall()
+        conn.close()
+
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT exchange_rate_to_php FROM currencies WHERE currency_code=%s", (currency_var.get(),))
+        row = cur.fetchone()
+        conn.close()
+        rate = float(row['exchange_rate_to_php']) if row else 1.0
+
+        for p in products:
+            converted = float(p['base_price_php']) * rate
+            inv_tree.insert('', 'end', values=(p['product_id'], p['name'], p['category'],
+                                               f"{converted:.2f}", p['stock']))
+
     def show_product_popup(event):
-        selected = inv_tree.selection()
-        if not selected:
+        sel = inv_tree.selection()
+        if not sel:
             return
-        pid = inv_tree.item(selected[0])['values'][0]
+        pid = inv_tree.item(sel[0])['values'][0]
         try:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("""SELECT name, category, description,
-                                  price_php, price_usd, price_krw, stock, image_url
-                           FROM products WHERE product_id=%s""", (pid,))
+            cur.execute("SELECT name, category, description, base_price_php, stock, image_url FROM products WHERE product_id=%s", (pid,))
             result = cur.fetchone()
             conn.close()
         except Exception as e:
-            messagebox.showerror("DB Error", f"Failed to fetch product:\n{e}")
+            messagebox.showerror("DB Error", str(e))
             return
-
         if not result:
             return
+        name, category, desc, base_price_php, stock, image_url = result
 
-        name, category, desc, php, usd, krw, stock, image_url = result
+        # convert price
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT exchange_rate_to_php FROM currencies WHERE currency_code=%s", (currency_var.get(),))
+        row = cur.fetchone()
+        conn.close()
+        rate = float(row['exchange_rate_to_php']) if row else 1.0
+        converted_price = float(base_price_php) * rate
+
         popup = tk.Toplevel(inventory_tab)
         popup.title(name)
         popup.geometry("400x500")
         popup.configure(bg=BG_COLOR)
-
         tk.Label(popup, text=name, font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
-        tk.Label(popup, text=f"Category: {category}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Description: {desc}", font=FONT_LABEL, fg=FG_TEXT,
-                 bg=BG_COLOR, wraplength=380, justify="left").pack(pady=2)
-        tk.Label(popup, text=f"Price (PHP): {php}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Price (USD): {usd}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Price (KRW): {krw}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Stock: {stock}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-
+        tk.Label(popup, text=f"Category: {category}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack()
+        tk.Label(popup, text=f"Description: {desc}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR, wraplength=380).pack()
+        tk.Label(popup, text=f"Price ({currency_var.get()}): {converted_price:.2f}",
+                 font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack()
+        tk.Label(popup, text=f"Stock: {stock}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack()
         img_label = tk.Label(popup, bg=BG_COLOR)
         img_label.pack(pady=10)
-
         try:
             if image_url:
-                if image_url.startswith("http://") or image_url.startswith("https://"):
+                if image_url.startswith("http"):
                     with urllib.request.urlopen(image_url) as u:
                         raw = u.read()
                     im = Image.open(io.BytesIO(raw))
                 else:
-                    if not os.path.isabs(image_url):
-                        image_url = os.path.join(os.getcwd(), image_url)
                     im = Image.open(image_url)
                 im = im.resize((150, 150))
                 photo = ImageTk.PhotoImage(im)
                 img_label.config(image=photo)
                 img_label.image = photo
             else:
-                img_label.config(text="No image available", fg="white")
-        except Exception as e:
-            img_label.config(text="Error loading image", fg="red")
+                img_label.config(text="No image")
+        except:
+            img_label.config(text="Image load error", fg="red")
 
-    # Bind double-click event to popup
     inv_tree.bind("<Double-1>", show_product_popup)
+    currency_var.trace_add("write", lambda *_: (inv_tree.heading("Price", text=f"Price ({currency_var.get()})"),
+                                                refresh_inventory()))
 
-
-    currency_var = tk.StringVar(value="price_php")
-    currency_frame = tk.Frame(inventory_tab, bg=BG_COLOR)
-    currency_frame.pack()
-    tk.Label(currency_frame, text="Currency:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=5)
-    currency_cb = ttk.Combobox(currency_frame, textvariable=currency_var,
-                               values=["price_php", "price_usd", "price_krw"],
-                               state="readonly")
-    currency_cb.pack(side="left", padx=5)
-
-    def refresh_inventory():
-        inv_tree.delete(*inv_tree.get_children())
-        try:
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute(f"SELECT product_id, name, category, {currency_var.get()}, stock FROM products WHERE is_active=1")
-            for row in cur.fetchall():
-                inv_tree.insert('', 'end', values=row)
-            conn.close()
-        except Exception as e:
-            messagebox.showerror("DB Error", f"Failed to fetch products:\n{e}")
-
-    def update_price_heading(*_):
-        current = currency_var.get()
-        if current == "price_php":
-            inv_tree.heading("Price", text="Price (PHP)")
-        elif current == "price_usd":
-            inv_tree.heading("Price", text="Price (USD)")
-        else:
-            inv_tree.heading("Price", text="Price (KRW)")
-        refresh_inventory()
-
-    currency_var.trace_add("write", update_price_heading)
-
-    # Stock update controls
+    # stock update
     stock_frame = tk.Frame(inventory_tab, bg=BG_COLOR)
     stock_frame.pack(pady=6)
     tk.Label(stock_frame, text="Set New Stock:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
@@ -718,18 +850,14 @@ def admin_panel(user, parent_window):
               bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR, activebackground=BTN_HOVER,
               command=lambda: update_stock(inv_tree, qty_var, user, refresh_inventory)).pack(side="left", padx=8)
 
-    # Inventory Buttons
     inv_btn_frame = tk.Frame(inventory_tab, bg=BG_COLOR)
     inv_btn_frame.pack(pady=8)
     tk.Button(inv_btn_frame, text="Add Product", bg="#4ee06e", fg=BTN_TEXT_COLOR,
-              font=FONT_BTN, activebackground="#3ac454",
-              command=lambda: add_product(inv_tree, refresh_inventory)).grid(row=0, column=0, padx=8)
+              font=FONT_BTN, command=lambda: add_product(inv_tree, refresh_inventory)).grid(row=0, column=0, padx=8)
     tk.Button(inv_btn_frame, text="Edit Product", bg="#f7d23a", fg=BTN_TEXT_COLOR,
-              font=FONT_BTN, activebackground="#e6b92e",
-              command=lambda: edit_product(inv_tree, refresh_inventory)).grid(row=0, column=1, padx=8)
+              font=FONT_BTN, command=lambda: edit_product(inv_tree, refresh_inventory)).grid(row=0, column=1, padx=8)
     tk.Button(inv_btn_frame, text="Delete Product", bg="#f7d23a", fg="#23272f",
-              font=FONT_BTN, activebackground="#e84c4c",
-              command=lambda: delete_product(inv_tree, refresh_inventory)).grid(row=0, column=2, padx=8)
+              font=FONT_BTN, command=lambda: delete_product(inv_tree, refresh_inventory)).grid(row=0, column=2, padx=8)
 
     # ===================== TRANSACTION LOG TAB =====================
     transaction_tab = tk.Frame(notebook, bg=BG_COLOR)
@@ -1029,26 +1157,18 @@ def admin_panel(user, parent_window):
 
     
 
-    # Initial loads
+  # Initial load
     refresh_inventory()
+    load_all_transactions()
     load_users()
     load_archived_users()
-    load_all_transactions()
 
-
-
-    # Add logout at bottom
+    # logout
     logout_frame = tk.Frame(admin, bg=BG_COLOR)
     logout_frame.pack(side="bottom", pady=10)
-    tk.Button(
-        logout_frame,
-        text="Logout",
-        font=FONT_BTN,
-        bg="#e84c4c",
-        fg="white",
-        activebackground="#c9302c",
-        command=lambda: (admin.destroy(), parent_window.deiconify() if parent_window else login_window())
-    ).pack()
+    tk.Button(logout_frame, text="Logout", font=FONT_BTN, bg="#e84c4c",
+              fg="white", command=lambda: (admin.destroy(),
+                                           parent_window.deiconify() if parent_window else login_window())).pack()
 
 
 # ==================== staff panel ====================
@@ -1091,9 +1211,7 @@ def staff_panel(user, parent_window=None):
         try:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("""SELECT name, category, description,
-                                  price_php, price_usd, price_krw, stock, image_url
-                           FROM products WHERE product_id=%s""", (pid,))
+            cur.execute("SELECT name, category, description, base_price_php, stock, image_url FROM products WHERE product_id=%s", (pid,))
             result = cur.fetchone()
             conn.close()
         except Exception as e:
@@ -1103,7 +1221,9 @@ def staff_panel(user, parent_window=None):
         if not result:
             return
 
-        name, category, desc, php, usd, krw, stock, image_url = result
+        # ✅ unpack only the 6 columns you selected
+        name, category, desc, php, stock, image_url = result
+
         popup = tk.Toplevel(staff)
         popup.title(name)
         popup.geometry("400x500")
@@ -1112,10 +1232,8 @@ def staff_panel(user, parent_window=None):
         tk.Label(popup, text=name, font=FONT_HEADER, fg=ACCENT_COLOR, bg=BG_COLOR).pack(pady=10)
         tk.Label(popup, text=f"Category: {category}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
         tk.Label(popup, text=f"Description: {desc}", font=FONT_LABEL, fg=FG_TEXT,
-                 bg=BG_COLOR, wraplength=380, justify="left").pack(pady=2)
+                bg=BG_COLOR, wraplength=380, justify="left").pack(pady=2)
         tk.Label(popup, text=f"Price (PHP): {php}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Price (USD): {usd}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
-        tk.Label(popup, text=f"Price (KRW): {krw}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
         tk.Label(popup, text=f"Stock: {stock}", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(pady=2)
 
         img_label = tk.Label(popup, bg=BG_COLOR)
@@ -1143,16 +1261,31 @@ def staff_panel(user, parent_window=None):
     inv_tree.bind("<Double-1>", show_product_popup_staff)
 
 
-    currency_var = tk.StringVar(value="price_php")
+    currency_var = tk.StringVar(value="PHP")  # ✅ default to PHP (matches your DB currency_code)
 
-    def refresh_inventory(_=None):
+
+    def refresh_inventory():
         inv_tree.delete(*inv_tree.get_children())
+
+        # fetch products
         conn = get_db()
-        cur = conn.cursor()
-        cur.execute(f"SELECT product_id,name,category,{currency_var.get()},stock FROM products WHERE is_active=1")
-        for row in cur.fetchall():
-            inv_tree.insert('', 'end', values=row)
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT product_id,name,category,base_price_php,stock FROM products WHERE is_active=1")
+        products = cur.fetchall()
         conn.close()
+
+        # get currency rate
+        selected_currency = currency_var.get()
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT exchange_rate_to_php FROM currencies WHERE currency_code=%s", (selected_currency,))
+        row = cur.fetchone()
+        conn.close()
+        rate = float(row['exchange_rate_to_php']) if row else 1.0
+
+        for p in products:
+            converted = float(p['base_price_php']) * rate
+            inv_tree.insert('', 'end', values=(p['product_id'], p['name'], p['category'], f"{converted:.2f}", p['stock']))
 
     refresh_inventory()
 
@@ -1255,6 +1388,34 @@ def staff_panel(user, parent_window=None):
             messagebox.showwarning("Select", "Choose an order to update.")
             return
         order_id = orders_tree.item(selected[0])['values'][0]
+
+        try:
+            # ✅ Check the categories in this order
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT DISTINCT category
+                FROM order_items oi
+                JOIN products p ON oi.product_id = p.product_id
+                WHERE oi.order_id = %s
+            """, (order_id,))
+            categories = [row[0] for row in cur.fetchall()]
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not verify product category:\n{e}")
+            return
+
+        # ✅ If any item is NOT merch, block
+        for c in categories:
+            if c != 'merch':  # only merch is allowed
+                messagebox.showinfo(
+                    "Not Allowed",
+                    f"Order #{order_id} contains a non‑merch item ({c}).\n"
+                    "Only merchandise orders can be marked as On The Way."
+                )
+                return
+
+        # ✅ All good, proceed
         if messagebox.askyesno("Confirm", f"Mark Order #{order_id} as On the Way?"):
             try:
                 conn = get_db()
@@ -1267,9 +1428,37 @@ def staff_panel(user, parent_window=None):
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to update order:\n{e}")
 
+
     # Buttons for pending orders
     pending_btn_frame = tk.Frame(orders_tab, bg=BG_COLOR)
     pending_btn_frame.pack(pady=8)
+
+    def check_low_stock_alerts():
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT a.alert_id, p.name, a.remaining_stock
+            FROM stock_alerts a
+            JOIN products p ON a.product_id = p.product_id
+            WHERE a.seen = 0
+        """)
+        alerts = cur.fetchall()
+        for alert in alerts:
+            messagebox.showwarning(
+                "Low Stock Alert",
+                f"⚠️ {alert['name']} is low on stock ({alert['remaining_stock']} left)!"
+            )
+            # mark as seen
+            cur.execute("UPDATE stock_alerts SET seen=1 WHERE alert_id=%s", (alert['alert_id'],))
+        conn.commit()
+        conn.close()
+
+    def poll_alerts():
+        check_low_stock_alerts()
+        staff.after(5000, poll_alerts)  # check every 5 seconds
+
+    poll_alerts()  # start the loop
+
 
     def prompt_deliver_key():
         selected = orders_tree.selection()
@@ -1457,7 +1646,14 @@ def add_product(tree, refresh):
         from tkinter import filedialog
         import os, shutil
         file = filedialog.askopenfilename(
-            filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.gif")])
+            filetypes=[
+                ("PNG Images", "*.png"),
+                ("JPEG Images", "*.jpg"),
+                ("JPEG Images", "*.jpeg"),
+                ("GIF Images", "*.gif")
+            ]
+        )
+
         if file:
             filename = os.path.basename(file)
             # store in assets/images
@@ -1472,7 +1668,7 @@ def add_product(tree, refresh):
     tk.Button(img_frame, text="Browse", command=upload_image).pack(side="right")
     # ---------------- END IMAGE UPLOAD ------------------
 
-    # save to database
+       # save to database
     def save():
         try:
             # read the PHP price from the form
@@ -1481,48 +1677,48 @@ def add_product(tree, refresh):
             messagebox.showerror("Error", "Price PHP must be a valid number.")
             return
 
+        # Optional: you can still do conversions for USD and KRW if you want,
+        # but we will not store them in the database since those columns do not exist.
         try:
             conn = get_db()
             cur = conn.cursor(dictionary=True)
-            cur.execute("SELECT currency_code, exchange_rate_to_usd FROM currencies")
+            cur.execute("SELECT currency_code, exchange_rate_to_php FROM currencies")
             rates = cur.fetchall()
             conn.close()
 
             php_to_usd = 0.0172   # fallback
-            usd_to_krw = None     # we will calculate later
+            krw_to_usd = None
 
-            # Find PHP and KRW rates
             for r in rates:
                 if r['currency_code'] == 'PHP':
-                    php_to_usd = float(r['exchange_rate_to_usd'])
+                    php_to_usd = float(r['exchange_rate_to_php'])
                 elif r['currency_code'] == 'KRW':
-                    krw_to_usd = float(r['exchange_rate_to_usd'])
+                    krw_to_usd = float(r['exchange_rate_to_php'])
 
-            # Convert
-            usd_price = round(php_price * php_to_usd, 2)
-            krw_price = round((php_price * php_to_usd) / krw_to_usd, 0)
+            # just for reference (not saved in DB)
+            usd_price = round(php_price * php_to_usd, 2) if php_to_usd else 0
+            krw_price = round((php_price * php_to_usd) / krw_to_usd, 0) if (php_to_usd and krw_to_usd) else 0
 
         except Exception as e:
             messagebox.showwarning("Currency Warning", f"Could not load currency rates. Using fallback.\n{e}")
-            # Fallback conversions if query fails
             usd_price = round(php_price / 58.0, 2)
             krw_price = round(php_price * 23.6, 0)
-
 
         try:
             conn = get_db()
             cur = conn.cursor()
+            # ✅ Fixed: match your actual table schema
             cur.execute("""INSERT INTO products
-                (name, category, price_php, price_usd, price_krw, stock, description, image_url)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (vars[0].get(),            # name
-                 vars[1].get(),            # category
-                 php_price,                # price_php
-                 usd_price,                # auto price_usd
-                 krw_price,                # auto price_krw
-                 vars[3].get(),            # stock
-                 vars[4].get(),            # description
-                 image_path.get()))        # image_url
+                (name, category, base_price_php, stock, description, image_url)
+                VALUES (%s,%s,%s,%s,%s,%s)""",
+                (
+                    vars[0].get(),          # name
+                    vars[1].get(),          # category
+                    php_price,              # base_price_php
+                    vars[3].get(),          # stock
+                    vars[4].get(),          # description
+                    image_path.get()        # image_url
+                ))
             conn.commit()
             conn.close()
             messagebox.showinfo("Saved", "Product added successfully!")
@@ -1540,13 +1736,22 @@ def edit_product(tree, refresh):
     if not selected:
         messagebox.showwarning("Select", "Choose a product!")
         return
-    pid, name, cat, price_php, stock = tree.item(selected[0])['values']
+
+    # Your tree currently has these columns: ID, Name, Category, Price, Stock
+    values = tree.item(selected[0])['values']
+    pid = values[0]
+    name = values[1]
+    cat = values[2]
+    stock = values[4]  # ✅ index 4 because [ID, Name, Category, Price, Stock]
+
     win = tk.Toplevel()
     win.title("Edit Product")
     win.geometry("420x280")
+
     tk.Label(win, text="Name").grid(row=0, column=0, sticky='e', pady=5)
     name_var = tk.StringVar(value=name)
     tk.Entry(win, textvariable=name_var).grid(row=0, column=1, pady=5)
+
     tk.Label(win, text="Stock").grid(row=1, column=0, sticky='e', pady=5)
     stock_var = tk.StringVar(value=str(stock))
     tk.Entry(win, textvariable=stock_var).grid(row=1, column=1, pady=5)
@@ -1559,7 +1764,8 @@ def edit_product(tree, refresh):
         conn.commit()
         conn.close()
         win.destroy()
-        refresh(tree)
+        refresh()
+
 
     tk.Button(win, text="Save", bg="#4ee06e", fg=BTN_TEXT_COLOR, command=save_edit).grid(row=3, column=1, pady=14)
 

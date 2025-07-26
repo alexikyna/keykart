@@ -12,29 +12,33 @@ CREATE TABLE users (
 );
 
 -- PRODUCTS TABLE
+DROP TABLE IF EXISTS products;
+
 CREATE TABLE products (
-    product_id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    category ENUM('game_key', 'in_game_currency', 'merch') NOT NULL,
-    price_php DECIMAL(10,2) NOT NULL,
-    price_usd DECIMAL(10,2) NOT NULL,
-    price_krw DECIMAL(10,2) NOT NULL,
-    stock INT DEFAULT 0,
-    description TEXT,
-    image_url VARCHAR(255)
+  product_id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  category ENUM('game_key','in_game_currency','merch') NOT NULL,
+  base_price_php DECIMAL(10,2) NOT NULL,   
+  stock INT DEFAULT 0,
+  description TEXT,
+  image_url VARCHAR(255),
+  is_active TINYINT(1) NOT NULL DEFAULT 1
 );
 
+
+
+
 -- ORDERS TABLE
+
 CREATE TABLE orders (
     order_id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT,
     order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    total_php DECIMAL(10,2),
-    total_usd DECIMAL(10,2),
-    total_krw DECIMAL(10,2),
-    status ENUM('pending', 'completed', 'cancelled') DEFAULT 'pending',
+    total_php DECIMAL(10,2),                 -- base currency total
+    status ENUM('pending','on_the_way','completed','cancelled') DEFAULT 'pending',
     FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
+
 
 -- ORDER ITEMS
 CREATE TABLE order_items (
@@ -80,10 +84,19 @@ CREATE TABLE user_archive (
 
 CREATE TABLE currencies (
   currency_id INT AUTO_INCREMENT PRIMARY KEY,
-  currency_code VARCHAR(10),
-  symbol VARCHAR(5),
-  exchange_rate_to_usd DECIMAL(10,4)
+  currency_code VARCHAR(10) NOT NULL,
+  symbol VARCHAR(5) NOT NULL,
+  exchange_rate_to_php DECIMAL(10,4) NOT NULL
 );
+
+CREATE TABLE stock_alerts (
+    alert_id INT AUTO_INCREMENT PRIMARY KEY,
+    product_id INT,
+    remaining_stock INT,
+    alerted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    seen TINYINT(1) DEFAULT 0
+);
+
 
 CREATE TABLE transaction_log (
   transaction_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -126,17 +139,20 @@ END$$
 DELIMITER ;
 
 -- 3. Low stock alert (write to stock_audit with type 'alert' if stock < 3)
+DROP TRIGGER IF EXISTS trg_low_stock_alert;
+
 DELIMITER $$
 CREATE TRIGGER trg_low_stock_alert
 AFTER UPDATE ON products
 FOR EACH ROW
 BEGIN
     IF NEW.stock < 3 THEN
-        INSERT INTO stock_audit (product_id, change_type, change_qty, by_user_id)
-        VALUES (NEW.product_id, 'alert', NEW.stock, NULL);
+        INSERT INTO stock_alerts (product_id, remaining_stock)
+        VALUES (NEW.product_id, NEW.stock);
     END IF;
 END$$
 DELIMITER ;
+
 
 -- 4. Auto-calculate order total after order_items insertion
 DELIMITER $$
@@ -187,7 +203,8 @@ CREATE PROCEDURE sp_place_order(
 )
 BEGIN
     DECLARE prod_price DECIMAL(10,2);
-    SELECT price_php INTO prod_price FROM products WHERE product_id = p_product_id;
+    SELECT base_price_php INTO prod_price FROM products WHERE product_id = p_product_id;
+
 
     INSERT INTO orders (user_id, total_php, status) VALUES (p_user_id, 0, 'pending');
     SET @last_order_id = LAST_INSERT_ID();
@@ -280,8 +297,7 @@ GRANT EXECUTE ON PROCEDURE keykart.sp_place_order TO 'gameruser'@'localhost';
 FLUSH PRIVILEGES;
 
 
-ALTER TABLE products
-ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1;
+
 
 DESCRIBE products;
 
@@ -304,24 +320,38 @@ INSERT INTO users (username, password, role, email) VALUES
 ('gamer10', 'gamerpass', 'customer', 'gamer10@email.com');
 
 
-INSERT INTO products (name, category, price_php, price_usd, price_krw, stock, description)
+INSERT INTO products (name, category, base_price_php, stock, description)
 VALUES
-('Elden Ring Steam Key', 'game_key', 2500, 45, 60000, 10, 'PC Steam Key - Elden Ring'),
-('Genshin Genesis Crystals', 'in_game_currency', 500, 9, 12000, 50, 'In-game top-up for Genshin Impact'),
-('Kirby Plush', 'merch', 1200, 22, 29000, 5, 'Soft Kirby Plush Toy'),
-('Final Fantasy XIV Online Key', 'game_key', 1800, 31, 43200, 15, 'PC Steam Key - Final Fantasy XIV'),
-('Overwatch 2 Credits', 'in_game_currency', 800, 14, 19200, 40, 'In-game credits for Overwatch 2'),
-('Zelda T-Shirt', 'merch', 900, 16, 21600, 20, 'Official Legend of Zelda graphic shirt');
+('Elden Ring Steam Key', 'game_key', 2500, 10, 'PC Steam Key - Elden Ring'),
+('Genshin Genesis Crystals', 'in_game_currency', 500, 50, 'In-game top-up for Genshin Impact'),
+('Kirby Plush', 'merch', 1200, 5, 'Soft Kirby Plush Toy'),
+('Final Fantasy XIV Online Key', 'game_key', 1800, 15, 'PC Steam Key - Final Fantasy XIV'),
+('Overwatch 2 Credits', 'in_game_currency', 800, 40, 'In-game credits for Overwatch 2'),
+('Zelda T-Shirt', 'merch', 900, 20, 'Official Legend of Zelda graphic shirt');
 
 ALTER TABLE users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1;
 
-INSERT INTO currencies (currency_code, symbol, exchange_rate_to_usd)
+INSERT INTO currencies (currency_code, symbol, exchange_rate_to_php)
 VALUES
-('PHP', '₱', 0.0172),   -- 1 PHP = 0.0172 USD (adjust as needed)
-('USD', '$', 1.0000),   -- base
-('KRW', '₩', 0.00073);  -- 1 KRW = 0.00073 USD (adjust as needed)
+('PHP', '₱', 1.0000),      -- 1 PHP = 1 PHP
+('USD', '$', 0.0172),      -- 1 PHP = 0.0172 USD
+('KRW', '₩', 23.6000);     -- 1 PHP = 23.6 KRW
 
 ALTER TABLE orders MODIFY COLUMN status 
     ENUM('pending','on_the_way','completed','cancelled') DEFAULT 'pending';
 
-SHOW COLUMNS FROM orders LIKE 'status';
+INSERT INTO currencies (currency_code, symbol, exchange_rate_to_php) VALUES ('JPY', '¥', 0.0069);
+
+
+
+select * from currencies;
+select * from key_deliveries;
+select * from order_items;
+select * from orders;
+select * from products;
+select * from stock_audit;
+select * from transaction_log;
+select * from user_archive;
+select * from users;
+select * from stock_alerts;
+SHOW TRIGGERS FROM keykart;
