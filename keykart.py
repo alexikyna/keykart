@@ -30,7 +30,7 @@ def get_db():
     return mysql.connector.connect(
         host="localhost",
         user="root",
-        password="Password123",
+        password="DLSU1234!",
         database="keykart"
     )
 
@@ -45,7 +45,7 @@ def login_window():
         try:
             conn = get_db()
             cur = conn.cursor(dictionary=True)
-            # ✅ Only fetch users that are active
+            # Only fetch users that are active
             cur.execute(
                 "SELECT * FROM users WHERE username=%s AND password=%s AND is_active=1",
                 (uname, pword)
@@ -320,7 +320,7 @@ def shop_window(user, parent_window=None):
         except Exception as e:
             img_label.config(text="Error loading image", fg="red")
 
-    # ✅ bind AFTER defining function
+    # bind AFTER defining function
     tree.bind("<Double-1>", show_product_popup_customer)
 
 
@@ -452,16 +452,16 @@ def shop_window(user, parent_window=None):
             conn = get_db()
             cur = conn.cursor()
 
-            # ✅ Place each item in cart
+            # Place each item in cart
             for item in cart:
                 cur.callproc('sp_place_order', (user['user_id'], item[0], item[2]))
                 cur.execute("SELECT LAST_INSERT_ID()")
                 order_id = cur.fetchone()[0]
-                # ❌ Removed direct status update
+                # Removed direct status update
                 # Orders (including game_key/currency) will remain pending
                 # until staff/admin delivers a key or manually updates
 
-            # ✅ Log payment in transaction_log
+            # Log payment in transaction_log
             cur.execute("""
                 SELECT order_id, total_php 
                 FROM orders 
@@ -651,7 +651,7 @@ def shop_window(user, parent_window=None):
         try:
             conn = get_db()
             cur = conn.cursor()
-            # ✅ join orders, order_items, products, key_deliveries
+            # join orders, order_items, products, key_deliveries
             cur.execute("""
                 SELECT o.order_id, p.name, k.game_key, k.delivered_at
                 FROM key_deliveries k
@@ -700,7 +700,6 @@ def shop_window(user, parent_window=None):
     shop.mainloop()
 
 
-# ===================== ADMIN PANEL =====================
 # ===================== ADMIN PANEL =====================
 def admin_panel(user, parent_window):
     if parent_window:
@@ -1125,9 +1124,9 @@ def admin_panel(user, parent_window):
             try:
                 conn = get_db()
                 cur = conn.cursor()
-                # ✅ Set is_active back to 1
+                # Set is_active back to 1
                 cur.execute("UPDATE users SET is_active = 1 WHERE user_id = %s", (uid,))
-                # ✅ Remove from archive
+                # Remove from archive
                 cur.execute("DELETE FROM user_archive WHERE user_id = %s", (uid,))
                 conn.commit()
                 conn.close()
@@ -1217,7 +1216,7 @@ def staff_panel(user, parent_window=None):
         if not result:
             return
 
-        # ✅ unpack only the 6 columns you selected
+        # unpack only the 6 columns you selected
         name, category, desc, php, stock, image_url = result
 
         popup = tk.Toplevel(staff)
@@ -1257,7 +1256,7 @@ def staff_panel(user, parent_window=None):
     inv_tree.bind("<Double-1>", show_product_popup_staff)
 
 
-    currency_var = tk.StringVar(value="PHP")  # ✅ default to PHP (matches your DB currency_code)
+    currency_var = tk.StringVar(value="PHP")  # default to PHP (matches your DB currency_code)
 
 
     def refresh_inventory():
@@ -1386,7 +1385,7 @@ def staff_panel(user, parent_window=None):
         order_id = orders_tree.item(selected[0])['values'][0]
 
         try:
-            # ✅ Check the categories in this order
+            # Check the categories in this order
             conn = get_db()
             cur = conn.cursor()
             cur.execute("""
@@ -1401,7 +1400,7 @@ def staff_panel(user, parent_window=None):
             messagebox.showerror("Error", f"Could not verify product category:\n{e}")
             return
 
-        # ✅ If any item is NOT merch, block
+        # If any item is NOT merch, block
         for c in categories:
             if c != 'merch':  # only merch is allowed
                 messagebox.showinfo(
@@ -1411,7 +1410,7 @@ def staff_panel(user, parent_window=None):
                 )
                 return
 
-        # ✅ All good, proceed
+        # All good, proceed
         if messagebox.askyesno("Confirm", f"Mark Order #{order_id} as On the Way?"):
             try:
                 conn = get_db()
@@ -1703,7 +1702,7 @@ def add_product(tree, refresh):
         try:
             conn = get_db()
             cur = conn.cursor()
-            # ✅ Fixed: match your actual table schema
+            # Fixed: match your actual table schema
             cur.execute("""INSERT INTO products
                 (name, category, base_price_php, stock, description, image_url)
                 VALUES (%s,%s,%s,%s,%s,%s)""",
@@ -1738,7 +1737,7 @@ def edit_product(tree, refresh):
     pid = values[0]
     name = values[1]
     cat = values[2]
-    stock = values[4]  # ✅ index 4 because [ID, Name, Category, Price, Stock]
+    stock = values[4]  # index 4 because [ID, Name, Category, Price, Stock]
 
     win = tk.Toplevel()
     win.title("Edit Product")
@@ -1824,15 +1823,15 @@ def generate_sales_report(startdate, enddate):
         conn = get_db()
         cur = conn.cursor()
 
-        # ✅ Call the stored procedure
+        # Call the stored procedure
         cur.callproc('sp_generate_sales_report', (startdate, enddate))
 
-        # ✅ Fetch results returned by the stored procedure
+        # Fetch results returned by the stored procedure
         rows = []
         for result in cur.stored_results():
             rows = result.fetchall()  # rows now include generated_at
 
-        # ✅ Create a popup window
+        # Create a popup window
         report_win = tk.Toplevel()
         report_win.title("Sales Report")
         report_win.geometry("800x400")
@@ -1846,7 +1845,7 @@ def generate_sales_report(startdate, enddate):
             bg=BG_COLOR
         ).pack(pady=10)
 
-        # ✅ Treeview with 6 columns, including Generated
+        # Treeview with 6 columns, including Generated
         tree = ttk.Treeview(
             report_win,
             columns=("OrderID", "Username", "Date", "Total", "Status", "Generated"),
@@ -1859,7 +1858,7 @@ def generate_sales_report(startdate, enddate):
             tree.column(col, anchor="center", width=120)
         tree.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # ✅ Insert rows directly from procedure
+        # Insert rows directly from procedure
         for row in rows:
             tree.insert("", "end", values=row)
 
