@@ -30,7 +30,7 @@ def get_db():
     return mysql.connector.connect(
         host="localhost",
         user="root",
-        password="DLSU1234!",
+        password="p@ssword",
         database="keykart"
     )
 
@@ -444,7 +444,7 @@ def shop_window(user, parent_window=None):
         update_cart_prices()
         messagebox.showinfo("Added", f"Added {qty} of {name} to cart.")
 
-    def checkout(user, payment_method="Cash"):
+    def checkout(user, payment_method="GCash"):
         if not cart:
             messagebox.showwarning("Cart", "Cart is empty!")
             return
@@ -508,8 +508,10 @@ def shop_window(user, parent_window=None):
                 conn.close()
                 messagebox.showinfo("Cancelled", f"Order #{order_id} has been cancelled.")
                 refresh_func()
+                refresh_products()  #  this is the key line to add
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to cancel order:\n{e}")
+
 
     def mark_order_delivered(tree_widget):
         selected = tree_widget.selection()
@@ -685,9 +687,9 @@ def shop_window(user, parent_window=None):
     payment_frame = tk.Frame(cart_tab, bg=BG_COLOR)
     payment_frame.pack(pady=6)
     tk.Label(payment_frame, text="Payment Method:", font=FONT_LABEL, fg=FG_TEXT, bg=BG_COLOR).pack(side="left", padx=4)
-    payment_method_var = tk.StringVar(value="Cash")
+    payment_method_var = tk.StringVar(value="GCash")
     payment_cb = ttk.Combobox(payment_frame, textvariable=payment_method_var,
-                              values=["Cash", "Credit Card", "GCash"], state="readonly")
+                              values=["Credit Card", "GCash"], state="readonly")
     payment_cb.pack(side="left", padx=4)
     tk.Button(cart_tab, text="Checkout", bg=ACCENT_COLOR, fg=BTN_TEXT_COLOR,
               font=FONT_BTN, activebackground=BTN_HOVER,
@@ -1463,11 +1465,16 @@ def staff_panel(user, parent_window=None):
 
         order_id = orders_tree.item(selected[0])['values'][0]
 
-        # Get the first order_item_id for this order
         try:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("SELECT order_item_id FROM order_items WHERE order_id=%s LIMIT 1", (order_id,))
+            cur.execute("""
+                SELECT oi.order_item_id, p.category
+                FROM order_items oi
+                JOIN products p ON oi.product_id = p.product_id
+                WHERE oi.order_id = %s
+                LIMIT 1
+            """, (order_id,))
             result = cur.fetchone()
             conn.close()
         except Exception as e:
@@ -1478,13 +1485,39 @@ def staff_panel(user, parent_window=None):
             messagebox.showwarning("No Item", f"No order items found for Order #{order_id}")
             return
 
-        order_item_id = result[0]
+        order_item_id, category = result
 
-        # Auto‑generate a dummy key (replace with your logic if you have real keys)
-        auto_key = str(uuid.uuid4()).upper()[:16]  # like 'ABC123...'
+        # Block if merch
+        if category == 'merch':
+            messagebox.showinfo(
+                "Not Allowed",
+                f"Order #{order_id} contains a merchandise item.\n"
+                "Only digital items (game key or in-game currency) can be processed here."
+            )
+            return
 
-        # Deliver immediately
-        deliver_game_key(order_item_id, auto_key)
+        if category == 'game_key':
+            auto_key = str(uuid.uuid4()).upper()[:16]
+            deliver_game_key(order_item_id, auto_key)
+
+        elif category == 'in_game_currency':
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE orders o
+                    JOIN order_items oi ON o.order_id = oi.order_id
+                    SET o.status = 'completed'
+                    WHERE oi.order_item_id = %s
+                """, (order_item_id,))
+                conn.commit()
+                conn.close()
+                messagebox.showinfo("Completed", f"In-game currency order #{order_id} marked as completed.")
+                load_pending_orders()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to mark as completed:\n{e}")
+
+
 
     # In your pending_btn_frame (or wherever you want to put it):
     tk.Button(
